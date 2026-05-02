@@ -28,5 +28,23 @@
         "items": {
             "type": "string"
         }
+    },
+    "rate_limit_enabled": {
+        "description": "启用限流",
+        "type": "bool",
+        "hint": "是否启用响应频率限制",
+        "default": true
+    },
+    "rate_limit_window": {
+        "description": "限流时间窗口（秒）",
+        "type": "int",
+        "hint": "限流的时间窗口，默认60秒",
+        "default": 60
+    },
+    "rate_limit_count": {
+        "description": "时间窗口内最大响应次数",
+        "type": "int",
+        "hint": "在时间窗口内每个群最多响应的次数，默认10次",
+        "default": 10
     }
 }
