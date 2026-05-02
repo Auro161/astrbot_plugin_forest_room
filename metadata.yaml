@@ -1,0 +1,6 @@
+name: astrbot_plugin_forest_room
+display_name: Forest 房间密钥提取
+desc: 监测 Forest 专注森林房间邀请消息，自动提取房间密钥并回复
+version: v1.0.0
+author: 火花花
+repo: https://github.com/Auro161/astrbot_plugin_forest_room

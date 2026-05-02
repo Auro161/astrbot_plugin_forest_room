@@ -1,0 +1,32 @@
+{
+    "enabled": {
+        "description": "启用插件",
+        "type": "bool",
+        "hint": "是否启用 Forest 房间密钥提取功能",
+        "default": true
+    },
+    "reply_format": {
+        "description": "回复格式",
+        "type": "string",
+        "hint": "检测到房间密钥后的回复格式，使用 {key} 作为密钥占位符",
+        "default": "{key}"
+    },
+    "whitelist": {
+        "description": "白名单群号",
+        "type": "list",
+        "hint": "只在这些群聊启用功能，为空则全部群生效",
+        "default": [],
+        "items": {
+            "type": "string"
+        }
+    },
+    "blacklist": {
+        "description": "黑名单群号",
+        "type": "list",
+        "hint": "在这些群聊禁用功能",
+        "default": [],
+        "items": {
+            "type": "string"
+        }
+    }
+}
