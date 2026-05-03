@@ -357,9 +357,47 @@ class ForestRoomPlugin(Star):
 
     # === 打卡功能 ===
 
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    @filter.event_message_type(EventMessageType.GROUP)
+    async def on_checkin_message(self, event: AstrMessageEvent):
+        """监听群消息，检测打卡（直接发送"打卡"即可）"""
+        if not self._platform_id:
+            self._platform_id = event.get_platform_id()
+
+        if not self.enabled:
+            return
+
+        message_text = event.message_str.strip()
+        if message_text != "打卡":
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+
+        if self.whitelist and group_id not in self.whitelist:
+            return
+
+        user_id = event.get_sender_id()
+        user_name = event.get_sender_name() or f"用户{user_id[-4:]}"
+
+        if self.db.has_checked_today(user_id, group_id):
+            days = self.db.get_user_week_days(user_id, group_id)
+            await event.send(event.plain_result(f"⚠️ 今日已打卡，本周已打卡 {days} 天"))
+            return
+
+        if not self.db.checkin(user_id, group_id, user_name):
+            await event.send(event.plain_result("⚠️ 打卡失败，请稍后重试"))
+            return
+
+        days = self.db.get_user_week_days(user_id, group_id)
+        logger.info(f"用户 {user_id} 在群 {group_id} 打卡成功，本周第 {days} 天")
+
+        await event.send(event.plain_result(f"✅ 打卡成功！本周已打卡 {days} 天"))
+
     @filter.command("打卡")
     async def checkin(self, event: AstrMessageEvent):
-        """每日打卡"""
+        """每日打卡（命令方式，需要前缀或@）"""
         if not self._platform_id:
             self._platform_id = event.get_platform_id()
 
