@@ -46,5 +46,101 @@
         "type": "int",
         "hint": "在时间窗口内每个群最多响应的次数，默认10次",
         "default": 10
+    },
+    "morning_notify_enabled": {
+        "description": "启用早起打卡通知",
+        "type": "bool",
+        "hint": "是否启用早起打卡定时通知",
+        "default": true
+    },
+    "morning_notify_time": {
+        "description": "早起通知时间（HH:MM格式）",
+        "type": "string",
+        "hint": "早起打卡通知的推送时间，默认07:00",
+        "default": "07:00"
+    },
+    "morning_notify_days": {
+        "description": "早起通知日期（0=周日，1-6=周一至周六）",
+        "type": "list",
+        "hint": "每周哪几天推送早起通知",
+        "default": [1, 2, 3, 4, 5, 6, 0],
+        "items": {
+            "type": "int"
+        }
+    },
+    "morning_notify_text": {
+        "description": "早起通知文案",
+        "type": "string",
+        "hint": "早起打卡通知的内容",
+        "default": "🌞 早上好！新的一天开始了，快来打卡种树吧！"
+    },
+    "night_notify_enabled": {
+        "description": "启用晚安通知",
+        "type": "bool",
+        "hint": "是否启用晚安定时通知",
+        "default": true
+    },
+    "night_notify_time": {
+        "description": "晚安通知时间（HH:MM格式）",
+        "type": "string",
+        "hint": "晚安通知的推送时间，默认22:00",
+        "default": "22:00"
+    },
+    "night_notify_days": {
+        "description": "晚安通知日期（0=周日，1-6=周一至周六）",
+        "type": "list",
+        "hint": "每周哪几天推送晚安通知",
+        "default": [0, 1, 2, 3, 4, 5, 6],
+        "items": {
+            "type": "int"
+        }
+    },
+    "night_notify_text": {
+        "description": "晚安通知文案",
+        "type": "string",
+        "hint": "晚安通知的内容",
+        "default": "🌙 夜深了，该休息啦，晚安！明天继续种树~"
+    },
+    "weekstat_enabled": {
+        "description": "启用周统计推送",
+        "type": "bool",
+        "hint": "是否启用每周打卡统计推送",
+        "default": true
+    },
+    "weekstat_day": {
+        "description": "周统计推送日期（0=周日，1-6=周一至周六）",
+        "type": "int",
+        "hint": "每周几推送打卡统计，默认周一",
+        "default": 1
+    },
+    "weekstat_time": {
+        "description": "周统计推送时间（HH:MM格式）",
+        "type": "string",
+        "hint": "周统计推送的时间，默认07:00",
+        "default": "07:00"
+    },
+    "rank_top_n": {
+        "description": "排行榜显示人数",
+        "type": "int",
+        "hint": "周统计排行榜显示前几名",
+        "default": 5
+    },
+    "topic_notify_enabled": {
+        "description": "启用每周学习目标推送",
+        "type": "bool",
+        "hint": "是否启用每周学习目标讨论推送",
+        "default": true
+    },
+    "topic_notify_day": {
+        "description": "学习目标推送日期（0=周日，1-6=周一至周六）",
+        "type": "int",
+        "hint": "每周几推送学习目标，默认周一",
+        "default": 1
+    },
+    "topic_notify_time": {
+        "description": "学习目标推送时间（HH:MM格式）",
+        "type": "string",
+        "hint": "学习目标推送的时间，默认08:00",
+        "default": "08:00"
     }
 }
