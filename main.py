@@ -1,7 +1,7 @@
 """
 Forest 房间密钥提取插件
 监测 Forest 专注森林房间邀请消息，自动提取房间密钥并回复
-支持打卡系统、定时通知、学习目标推送
+支持打卡系统、定时通知、学习目标推送、AI 查询打卡记录
 """
 
 import re
@@ -17,6 +17,7 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain
+from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from .database import ForestDB
 
@@ -284,6 +285,48 @@ class ForestRoomPlugin(Star):
         timestamps.append(now)
         return True
 
+    def _build_checkin_tools(self, user_id: str, group_id: str) -> ToolSet:
+        """构建打卡查询工具集"""
+
+        async def check_today_checkin(context, **kwargs) -> str:
+            """查询今日是否打卡"""
+            checked = self.db.has_checked_today(user_id, group_id)
+            return "今日已打卡" if checked else "今日未打卡"
+
+        async def get_week_checkin_count(context, **kwargs) -> str:
+            """查询本周打卡天数"""
+            days = self.db.get_user_week_days(user_id, group_id)
+            return f"本周已打卡 {days} 天"
+
+        async def get_missed_checkin_days(context, **kwargs) -> str:
+            """查询本周未打卡日期"""
+            missed = self.db.get_user_missed_days(user_id, group_id)
+            if not missed:
+                return "本周全勤，没有缺打卡"
+            return f"本周未打卡日期：{', '.join(missed)}"
+
+        tools = ToolSet([
+            FunctionTool(
+                name="check_today_checkin",
+                parameters={"type": "object", "properties": {}},
+                description="查询用户今日是否已打卡",
+                handler=check_today_checkin,
+            ),
+            FunctionTool(
+                name="get_week_checkin_count",
+                parameters={"type": "object", "properties": {}},
+                description="查询用户本周打卡天数",
+                handler=get_week_checkin_count,
+            ),
+            FunctionTool(
+                name="get_missed_checkin_days",
+                parameters={"type": "object", "properties": {}},
+                description="查询用户本周哪些天没有打卡",
+                handler=get_missed_checkin_days,
+            ),
+        ])
+        return tools
+
     # === 消息处理 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -423,16 +466,34 @@ class ForestRoomPlugin(Star):
         if not self._check_keyword_rate_limit(group_id):
             return
 
-        # 获取默认人设的系统提示词
-        persona = await self.context.persona_manager.get_default_persona_v3(event.unified_msg_origin)
-        system_prompt = persona.get("prompt", "") if persona else ""
+        # 获取用户信息
+        user_id = event.get_sender_id()
 
-        # 调用 AI 回复（单轮对话）
+        # 构建打卡查询工具集
+        tools = self._build_checkin_tools(user_id, group_id)
+
+        # 获取默认人设的系统提示词
+        persona = self.context.persona_manager.get_default_persona(event.unified_msg_origin)
+        system_prompt = persona.get("prompt", "") if persona else ""
+        system_prompt += "\n\n你可以使用工具查询用户的打卡记录，当用户询问打卡相关问题时，请调用相应的工具。"
+
+        # 获取当前 chat provider
+        provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+
+        # 调用带工具的 AI
         logger.info(f"检测到关键词触发: {message_text}")
-        yield event.request_llm(
-            prompt=message_text,
-            system_prompt=system_prompt,
-        )
+        try:
+            response = await self.context.tool_loop_agent(
+                event=event,
+                chat_provider_id=provider_id,
+                prompt=message_text,
+                tools=tools,
+                system_prompt=system_prompt,
+            )
+            yield event.plain_result(response.completion_text)
+        except Exception as e:
+            logger.error(f"AI 回复失败: {e}")
+            yield event.plain_result("抱歉，处理您的请求时出现了问题。")
 
     # === 打卡功能 ===
 

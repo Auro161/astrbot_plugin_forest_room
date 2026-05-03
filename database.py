@@ -116,6 +116,41 @@ class ForestDB:
             result = cursor.fetchone()
             return result[0] if result else 0
 
+    def get_user_checkin_dates(self, user_id: str, group_id: str) -> List[str]:
+        """获取用户本周打卡日期列表"""
+        today = datetime.now()
+        week_start = today - timedelta(days=today.weekday())
+        week_start_str = week_start.strftime("%Y-%m-%d")
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """SELECT DISTINCT checkin_date
+                   FROM checkins
+                   WHERE user_id = ? AND group_id = ? AND checkin_date >= ?
+                   ORDER BY checkin_date ASC""",
+                (user_id, group_id, week_start_str)
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_user_missed_days(self, user_id: str, group_id: str) -> List[str]:
+        """获取用户本周未打卡日期列表（截至今天）"""
+        today = datetime.now()
+        week_start = today - timedelta(days=today.weekday())
+
+        # 本周所有日期（从周一到今天）
+        all_dates = []
+        current = week_start
+        while current <= today:
+            all_dates.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+
+        # 已打卡日期
+        checked_dates = set(self.get_user_checkin_dates(user_id, group_id))
+
+        # 未打卡日期
+        missed = [d for d in all_dates if d not in checked_dates]
+        return missed
+
     # === 学习主题相关 ===
 
     def add_topic(self, content: str) -> int:
