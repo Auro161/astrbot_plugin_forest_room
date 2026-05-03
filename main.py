@@ -7,12 +7,9 @@ import re
 import time
 from collections import defaultdict, deque
 from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
-from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
-    AiocqhttpMessageEvent,
-)
-from astrbot.core.star.filter.event_message_type import EventMessageType
 
 
 class ForestRoomPlugin(Star):
@@ -65,7 +62,7 @@ class ForestRoomPlugin(Star):
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     @filter.event_message_type(EventMessageType.ALL)
-    async def on_message(self, event: AiocqhttpMessageEvent):
+    async def on_message(self, event: AstrMessageEvent):
         """
         监听所有消息，检测 Forest 房间邀请
         """
