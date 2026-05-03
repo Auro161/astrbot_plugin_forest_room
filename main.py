@@ -391,7 +391,7 @@ class ForestRoomPlugin(Star):
     # === 关键词唤起 AI 回复 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    @filter.event_message_type(EventMessageType.GROUP)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def on_keyword_message(self, event: AstrMessageEvent):
         """监听群消息，检测关键词触发 AI 回复"""
         if not self._platform_id:
@@ -424,7 +424,7 @@ class ForestRoomPlugin(Star):
             return
 
         # 获取默认人设的系统提示词
-        persona = self.context.persona_manager.get_default_persona(event.unified_msg_origin)
+        persona = await self.context.persona_manager.get_default_persona_v3(event.unified_msg_origin)
         system_prompt = persona.get("prompt", "") if persona else ""
 
         # 调用 AI 回复（单轮对话）
@@ -437,7 +437,7 @@ class ForestRoomPlugin(Star):
     # === 打卡功能 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    @filter.event_message_type(EventMessageType.GROUP)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def on_checkin_message(self, event: AstrMessageEvent):
         """监听群消息，检测打卡（直接发送"打卡"即可）"""
         if not self._platform_id:
