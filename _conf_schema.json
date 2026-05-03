@@ -185,18 +185,10 @@
     "fixed_reply_rules": {
         "description": "固定回复规则列表",
         "type": "list",
-        "hint": "配置关键词组合与对应的固定回复，每条规则需包含 main_keyword、trigger_words、reply",
+        "hint": "配置触发词与对应的固定回复，每条规则需包含 trigger_words、reply",
         "default": [
             {
-                "main_keyword": "果果",
-                "trigger_words": [
-                    "安装包", "apk",
-                    "有apk吗", "有安装包吗", "有安装包", "有没有apk", "有没有安装包",
-                    "发个安装包", "发个apk", "给我安装包", "求安装包",
-                    "哪里下载", "怎么下载", "在哪下",
-                    "下载链接", "下载地址",
-                    "官方下载", "官方app", "官方安装包"
-                ],
+                "trigger_words": ["安装包", "apk", "下载链接", "官方下载"],
                 "reply": "Forest 官方下载链接：https://www.upwardsware.com/zh_CN/"
             }
         ],

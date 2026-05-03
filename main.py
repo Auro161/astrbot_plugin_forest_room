@@ -84,13 +84,6 @@ class ForestRoomPlugin(Star):
         self.fixed_reply_enabled = self.config.get("fixed_reply_enabled", True)
         self.fixed_reply_rules = self.config.get("fixed_reply_rules", [])
 
-        # 预处理规则：按主关键词分组
-        self.fixed_reply_map: dict[str, list[dict]] = {}
-        for rule in self.fixed_reply_rules:
-            main_kw = rule.get("main_keyword", "")
-            if main_kw:
-                self.fixed_reply_map.setdefault(main_kw, []).append(rule)
-
         # === 数据库初始化 ===
         data_dir = StarTools.get_data_dir()
         db_path = data_dir / "forest.db"
@@ -298,16 +291,13 @@ class ForestRoomPlugin(Star):
 
     def _match_fixed_reply(self, message_text: str) -> str | None:
         """匹配固定回复规则，返回回复内容或 None"""
-        if not self.fixed_reply_enabled or not self.fixed_reply_map:
+        if not self.fixed_reply_enabled or not self.fixed_reply_rules:
             return None
 
-        for main_keyword, rules in self.fixed_reply_map.items():
-            if main_keyword not in message_text:
-                continue
-            for rule in rules:
-                for trigger in rule.get("trigger_words", []):
-                    if trigger in message_text:
-                        return rule.get("reply", "")
+        for rule in self.fixed_reply_rules:
+            for trigger in rule.get("trigger_words", []):
+                if trigger in message_text:
+                    return rule.get("reply", "")
         return None
 
     def _build_checkin_tools(self, user_id: str, group_id: str) -> ToolSet:
@@ -456,6 +446,42 @@ class ForestRoomPlugin(Star):
         logger.info(f"已从白名单移除群 {group_id}")
         yield event.plain_result(f"✅ 已从白名单移除群 {group_id}")
 
+    # === 固定回复 ===
+
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def on_fixed_reply_message(self, event: AstrMessageEvent):
+        """监听群消息，检测固定回复触发词"""
+        if not self._platform_id:
+            self._platform_id = event.get_platform_id()
+
+        if not self.enabled or not self.fixed_reply_enabled:
+            return
+
+        message_text = event.message_str
+        fixed_reply = self._match_fixed_reply(message_text)
+        if not fixed_reply:
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+
+        # 白名单检查
+        if self.whitelist and group_id not in self.whitelist:
+            return
+
+        # 黑名单检查
+        if group_id in self.blacklist:
+            return
+
+        # 限流检查
+        if not self._check_keyword_rate_limit(group_id):
+            return
+
+        logger.info(f"触发固定回复: {message_text}")
+        yield event.plain_result(fixed_reply)
+
     # === 关键词唤起 AI 回复 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -486,15 +512,6 @@ class ForestRoomPlugin(Star):
         # 黑名单检查
         if group_id in self.blacklist:
             return
-
-        # === 优先检查固定回复 ===
-        if self.fixed_reply_enabled:
-            fixed_reply = self._match_fixed_reply(message_text)
-            if fixed_reply:
-                if self._check_keyword_rate_limit(group_id):
-                    logger.info(f"触发固定回复: {message_text}")
-                    yield event.plain_result(fixed_reply)
-                    return
 
         # 关键词独立限流检查
         if not self._check_keyword_rate_limit(group_id):
