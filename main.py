@@ -15,8 +15,8 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
-from astrbot.core.message.message_chain import MessageChain
-from astrbot.core.message.components import Plain
+from astrbot.api.event import MessageChain
+from astrbot.api.message_components import Plain
 
 from .database import ForestDB
 
