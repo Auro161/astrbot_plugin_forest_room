@@ -175,5 +175,33 @@
         "type": "int",
         "hint": "在时间窗口内每个群最多触发关键词回复的次数，默认5次",
         "default": 5
+    },
+    "fixed_reply_enabled": {
+        "description": "启用关键词固定回复",
+        "type": "bool",
+        "hint": "是否启用关键词触发固定回复功能",
+        "default": true
+    },
+    "fixed_reply_rules": {
+        "description": "固定回复规则列表",
+        "type": "list",
+        "hint": "配置关键词组合与对应的固定回复，每条规则需包含 main_keyword、trigger_words、reply",
+        "default": [
+            {
+                "main_keyword": "果果",
+                "trigger_words": [
+                    "安装包", "apk",
+                    "有apk吗", "有安装包吗", "有安装包", "有没有apk", "有没有安装包",
+                    "发个安装包", "发个apk", "给我安装包", "求安装包",
+                    "哪里下载", "怎么下载", "在哪下",
+                    "下载链接", "下载地址",
+                    "官方下载", "官方app", "官方安装包"
+                ],
+                "reply": "Forest 官方下载链接：https://www.upwardsware.com/zh_CN/"
+            }
+        ],
+        "items": {
+            "type": "object"
+        }
     }
 }
