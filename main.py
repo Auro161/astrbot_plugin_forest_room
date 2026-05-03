@@ -73,6 +73,12 @@ class ForestRoomPlugin(Star):
         else:
             self.keyword_pattern = None
 
+        # 关键词独立限流
+        self.keyword_rate_limit_enabled = self.config.get("keyword_rate_limit_enabled", True)
+        self.keyword_rate_limit_window = self.config.get("keyword_rate_limit_window", 60)
+        self.keyword_rate_limit_count = self.config.get("keyword_rate_limit_count", 5)
+        self.keyword_timestamps: defaultdict[str, deque] = defaultdict(deque)
+
         # === 数据库初始化 ===
         data_dir = StarTools.get_data_dir()
         db_path = data_dir / "forest.db"
@@ -260,6 +266,24 @@ class ForestRoomPlugin(Star):
         timestamps.append(now)
         return True
 
+    def _check_keyword_rate_limit(self, group_id: str) -> bool:
+        """检查关键词是否触发限流，返回 True 表示允许响应"""
+        if not self.keyword_rate_limit_enabled:
+            return True
+
+        now = time.time()
+        timestamps = self.keyword_timestamps[group_id]
+
+        while timestamps and timestamps[0] < now - self.keyword_rate_limit_window:
+            timestamps.popleft()
+
+        if len(timestamps) >= self.keyword_rate_limit_count:
+            logger.debug(f"群 {group_id} 关键词触发限流，当前计数: {len(timestamps)}")
+            return False
+
+        timestamps.append(now)
+        return True
+
     # === 消息处理 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -395,8 +419,8 @@ class ForestRoomPlugin(Star):
         if group_id in self.blacklist:
             return
 
-        # 限流检查
-        if not self._check_rate_limit(group_id):
+        # 关键词独立限流检查
+        if not self._check_keyword_rate_limit(group_id):
             return
 
         # 获取默认人设的系统提示词

@@ -157,5 +157,23 @@
         "items": {
             "type": "string"
         }
+    },
+    "keyword_rate_limit_enabled": {
+        "description": "启用关键词限流",
+        "type": "bool",
+        "hint": "是否启用关键词触发的频率限制",
+        "default": true
+    },
+    "keyword_rate_limit_window": {
+        "description": "关键词限流时间窗口（秒）",
+        "type": "int",
+        "hint": "关键词限流的时间窗口，默认60秒",
+        "default": 60
+    },
+    "keyword_rate_limit_count": {
+        "description": "关键词限流次数",
+        "type": "int",
+        "hint": "在时间窗口内每个群最多触发关键词回复的次数，默认5次",
+        "default": 5
     }
 }
