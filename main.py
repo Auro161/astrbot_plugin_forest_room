@@ -64,6 +64,15 @@ class ForestRoomPlugin(Star):
         self.topic_notify_day = self.config.get("topic_notify_day", 1)
         self.topic_notify_time = self.config.get("topic_notify_time", "08:00")
 
+        # === 关键词唤起配置 ===
+        self.keyword_reply_enabled = self.config.get("keyword_reply_enabled", True)
+        self.keywords = self.config.get("keywords", ["果果"])
+        if self.keywords:
+            pattern = "|".join(re.escape(kw) for kw in self.keywords)
+            self.keyword_pattern = re.compile(f"({pattern})")
+        else:
+            self.keyword_pattern = None
+
         # === 数据库初始化 ===
         data_dir = StarTools.get_data_dir()
         db_path = data_dir / "forest.db"
@@ -354,6 +363,52 @@ class ForestRoomPlugin(Star):
 
         logger.info(f"已从白名单移除群 {group_id}")
         yield event.plain_result(f"✅ 已从白名单移除群 {group_id}")
+
+    # === 关键词唤起 AI 回复 ===
+
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    @filter.event_message_type(EventMessageType.GROUP)
+    async def on_keyword_message(self, event: AstrMessageEvent):
+        """监听群消息，检测关键词触发 AI 回复"""
+        if not self._platform_id:
+            self._platform_id = event.get_platform_id()
+
+        if not self.enabled or not self.keyword_reply_enabled:
+            return
+
+        if not self.keyword_pattern:
+            return
+
+        message_text = event.message_str
+        if not self.keyword_pattern.search(message_text):
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+
+        # 白名单检查
+        if self.whitelist and group_id not in self.whitelist:
+            return
+
+        # 黑名单检查
+        if group_id in self.blacklist:
+            return
+
+        # 限流检查
+        if not self._check_rate_limit(group_id):
+            return
+
+        # 获取默认人设的系统提示词
+        persona = self.context.persona_manager.get_default_persona(event.unified_msg_origin)
+        system_prompt = persona.get("prompt", "") if persona else ""
+
+        # 调用 AI 回复（单轮对话）
+        logger.info(f"检测到关键词触发: {message_text}")
+        yield event.request_llm(
+            prompt=message_text,
+            system_prompt=system_prompt,
+        )
 
     # === 打卡功能 ===
 

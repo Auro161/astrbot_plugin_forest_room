@@ -142,5 +142,20 @@
         "type": "string",
         "hint": "学习目标推送的时间，默认08:00",
         "default": "08:00"
+    },
+    "keyword_reply_enabled": {
+        "description": "启用关键词唤起回复",
+        "type": "bool",
+        "hint": "是否启用关键词触发 AI 回复功能",
+        "default": true
+    },
+    "keywords": {
+        "description": "触发关键词列表",
+        "type": "list",
+        "hint": "触发 AI 回复的关键词，如：果果、小果",
+        "default": ["果果"],
+        "items": {
+            "type": "string"
+        }
     }
 }
