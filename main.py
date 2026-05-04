@@ -7,6 +7,8 @@ Forest 房间密钥提取插件
 import re
 import time
 import asyncio
+import json
+import random
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,12 +18,68 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Plain, Image
 from astrbot.api import FunctionTool, ToolSet
 
 # 不要使用这样的from astrbot.core.agent.tool import FunctionTool, ToolSet，这个会报错，需要使用这样的from astrbot.api import FunctionTool, ToolSet
 
 from .database import ForestDB
+
+
+class TreeManager:
+    """树种数据管理器"""
+
+    def __init__(self, plugin_dir: Path):
+        self.plugin_dir = plugin_dir
+        self.trees_data: dict = {}
+        self.trees_list: list = []
+        self._load_tree_data()
+
+    def _load_tree_data(self):
+        """加载树种数据"""
+        tree_file = self.plugin_dir / "tree" / "tree_names.json"
+        if tree_file.exists():
+            try:
+                with open(tree_file, "r", encoding="utf-8") as f:
+                    self.trees_data = json.load(f)
+                    self.trees_list = list(self.trees_data.items())
+                    logger.info(f"已加载 {len(self.trees_list)} 个树种数据")
+            except Exception as e:
+                logger.error(f"加载树种数据失败: {e}")
+
+    def get_tree_info(self, tree_id: str) -> dict | None:
+        """获取单个树种信息"""
+        return self.trees_data.get(tree_id)
+
+    def get_all_tree_ids(self) -> list:
+        """获取所有树种ID列表"""
+        return list(self.trees_data.keys())
+
+    def search_trees(self, keyword: str) -> list:
+        """搜索树种（按中文名或英文名）"""
+        results = []
+        keyword_lower = keyword.lower()
+        for tree_id, info in self.trees_list:
+            zh_name = info.get("zh", "").lower()
+            en_name = info.get("en", "").lower()
+            if keyword_lower in zh_name or keyword_lower in en_name:
+                results.append((tree_id, info))
+        return results
+
+    def get_tree_image_path(self, tree_id: str) -> Path | None:
+        """获取树种图片路径"""
+        tree_info = self.trees_data.get(tree_id)
+        if not tree_info:
+            return None
+
+        en_name = tree_info.get("en", "").replace("/", "_")
+        zh_name = tree_info.get("zh", "").replace("/", "_")
+        image_name = f"{tree_id}_{en_name}_{zh_name}.webp"
+        image_path = self.plugin_dir / "tree" / "mature_trees" / image_name
+
+        if image_path.exists():
+            return image_path
+        return None
 
 
 class ForestRoomPlugin(Star):
@@ -86,15 +144,29 @@ class ForestRoomPlugin(Star):
         self.fixed_reply_enabled = self.config.get("fixed_reply_enabled", True)
         self.fixed_reply_rules = self.config.get("fixed_reply_rules", [])
 
+        # === 树种推送配置 ===
+        self.tree_notify_enabled = self.config.get("tree_notify_enabled", True)
+
         # === 数据库初始化 ===
         data_dir = StarTools.get_data_dir()
         db_path = data_dir / "forest.db"
         self.db = ForestDB(db_path)
 
+        # === 树种数据加载 ===
+        plugin_dir = Path(__file__).parent
+        self.tree_manager = TreeManager(plugin_dir)
+
         # === 定时任务状态 ===
         self._last_check_minute = -1
         self._schedule_task = None
         self._platform_id: str | None = None
+
+        # === 今日树种缓存 ===
+        self._today_tree_message: str | None = None
+        self._today_tree_id: str | None = None
+
+        # === AI 树种查询缓存 ===
+        self._ai_queried_tree_ids: list[str] = []
 
         # Forest 房间密钥正则表达式
         self.key_pattern = re.compile(r"输入我的房间密钥：([A-Z0-9]+)，和我一起")
@@ -204,10 +276,101 @@ class ForestRoomPlugin(Star):
         except Exception as e:
             logger.error(f"发送消息到群 {group_id} 异常: {e}")
 
+    async def _send_group_message_with_image(self, group_id: str, message: str, image_path: Path | None):
+        """发送消息到指定群（带图片）"""
+        if not self._platform_id:
+            logger.warning("平台 ID 未初始化，无法发送消息")
+            return
+
+        session_str = f"{self._platform_id}:GroupMessage:{group_id}"
+
+        try:
+            components = [Plain(message)]
+            if image_path and image_path.exists():
+                components.append(Image(file=str(image_path)))
+
+            message_chain = MessageChain(components)
+            success = await self.context.send_message(session_str, message_chain)
+            if success:
+                logger.info(f"已发送消息到群 {group_id}")
+            else:
+                logger.warning(f"发送消息到群 {group_id} 失败：未找到匹配的平台")
+        except Exception as e:
+            logger.error(f"发送消息到群 {group_id} 异常: {e}")
+
     async def _send_morning_notify(self):
-        """发送早安通知"""
+        """发送早安通知（附带每日树种和图片）"""
         logger.info("发送早安打卡通知")
-        await self._send_to_whitelist_groups(self.morning_notify_text)
+
+        base_message = self.morning_notify_text
+        tree_image_path = None
+
+        if self.tree_notify_enabled and self.tree_manager.trees_data:
+            tree_message, tree_id = await self._get_daily_tree_message()
+            if tree_message:
+                base_message = f"{base_message}\n\n{tree_message}"
+                tree_image_path = self.tree_manager.get_tree_image_path(tree_id)
+
+        # 发送到白名单群
+        if not self.whitelist:
+            logger.debug("白名单为空，跳过推送")
+            return
+
+        if not self._platform_id:
+            logger.warning("平台 ID 未初始化，跳过推送")
+            return
+
+        for group_id in self.whitelist:
+            try:
+                await self._send_group_message_with_image(group_id, base_message, tree_image_path)
+            except Exception as e:
+                logger.error(f"发送消息到群 {group_id} 失败: {e}")
+
+    async def _get_daily_tree_message(self) -> tuple[str, str] | tuple[None, None]:
+        """获取今日推送的树种信息，返回 (消息, 树种ID)"""
+        all_tree_ids = self.tree_manager.get_all_tree_ids()
+        if not all_tree_ids:
+            return None, None
+
+        pushed_ids = self.db.get_pushed_tree_ids()
+        unpushed_ids = [tid for tid in all_tree_ids if tid not in pushed_ids]
+
+        # 如果全部推送完，重置
+        if not unpushed_ids:
+            logger.info("所有树种已推送完毕，重新循环")
+            self.db.reset_all_trees()
+            unpushed_ids = all_tree_ids
+
+        # 随机选择一个未推送的树种
+        tree_id = random.choice(unpushed_ids)
+        tree_info = self.tree_manager.get_tree_info(tree_id)
+
+        if not tree_info:
+            return None, None
+
+        # 标记已推送
+        self.db.mark_tree_pushed(tree_id)
+
+        # 构建消息
+        zh_name = tree_info.get("zh", "未知树种")
+        en_name = tree_info.get("en", "")
+        tier = tree_info.get("tier", "")
+        description = tree_info.get("description", "")
+
+        message = f"今日树种：{zh_name}\n"
+        if en_name:
+            message += f"英文名：{en_name}\n"
+        if tier:
+            message += f"稀有度：{tier}\n"
+        if description:
+            message += description
+
+        # 保存今日树种信息供查询
+        self._today_tree_message = message
+        self._today_tree_id = tree_id
+
+        logger.info(f"今日推送树种: {zh_name} (ID: {tree_id})")
+        return message, tree_id
 
     async def _send_night_notify(self):
         """发送晚安通知"""
@@ -340,6 +503,160 @@ class ForestRoomPlugin(Star):
                 parameters={"type": "object", "properties": {}},
                 description="查询用户本周哪些天没有打卡",
                 handler=get_missed_checkin_days,
+            ),
+        ])
+        return tools
+
+    def _build_tree_tools(self) -> ToolSet:
+        """构建树种查询工具集"""
+
+        async def search_tree_by_name(context, name: str, **kwargs) -> str:
+            """根据名称搜索树种"""
+            results = self.tree_manager.search_trees(name)
+            if not results:
+                return f"未找到包含「{name}」的树种"
+
+            # 记录查询到的树种 ID（用于后续发送图片）
+            for tree_id, _ in results[:3]:  # 最多记录3个
+                if tree_id not in self._ai_queried_tree_ids:
+                    self._ai_queried_tree_ids.append(tree_id)
+
+            lines = [f"找到 {len(results)} 个匹配的树种："]
+            for tree_id, info in results[:5]:
+                zh = info.get("zh", "")
+                en = info.get("en", "")
+                tier = info.get("tier", "")
+                desc = info.get("description", "")[:50]
+                lines.append(f"• {zh} ({en}) [{tier}]\n  {desc}...")
+
+            return "\n".join(lines)
+
+        async def get_tree_detail(context, tree_id: str, **kwargs) -> str:
+            """获取树种详细信息"""
+            tree_info = self.tree_manager.get_tree_info(tree_id)
+            if not tree_info:
+                return f"未找到 ID 为 {tree_id} 的树种"
+
+            # 记录查询到的树种 ID
+            if tree_id not in self._ai_queried_tree_ids:
+                self._ai_queried_tree_ids.append(tree_id)
+
+            zh = tree_info.get("zh", "未知")
+            en = tree_info.get("en", "未知")
+            tier = tree_info.get("tier", "未知")
+            desc = tree_info.get("description", "暂无描述")
+
+            return f"""🌲 树种详情
+名称：{zh}
+英文名：{en}
+稀有度：{tier}
+描述：{desc}"""
+
+        async def list_trees_by_tier(context, tier: str, **kwargs) -> str:
+            """按稀有度列出树种"""
+            valid_tiers = ["基础", "稀有", "史诗", "传说", "特殊"]
+            if tier not in valid_tiers:
+                return f"稀有度可选值：{', '.join(valid_tiers)}"
+
+            results = [(tid, info) for tid, info in self.tree_manager.trees_list
+                       if info.get("tier") == tier]
+
+            if not results:
+                return f"没有稀有度为「{tier}」的树种"
+
+            lines = [f"稀有度「{tier}」的树种（共 {len(results)} 个）："]
+            for tree_id, info in results[:10]:
+                zh = info.get("zh", "")
+                lines.append(f"• {zh} (ID: {tree_id})")
+
+            if len(results) > 10:
+                lines.append(f"... 还有 {len(results) - 10} 个")
+
+            return "\n".join(lines)
+
+        async def get_random_tree(context, **kwargs) -> str:
+            """随机推荐一个树种"""
+            if not self.tree_manager.trees_list:
+                return "树种数据未加载"
+
+            tree_id, info = random.choice(self.tree_manager.trees_list)
+
+            # 记录查询到的树种 ID
+            if tree_id not in self._ai_queried_tree_ids:
+                self._ai_queried_tree_ids.append(tree_id)
+
+            zh = info.get("zh", "")
+            en = info.get("en", "")
+            tier = info.get("tier", "")
+            desc = info.get("description", "")
+
+            return f"随机推荐：{zh} ({en}) [{tier}]\n{desc}"
+
+        async def get_tree_stats(context, **kwargs) -> str:
+            """获取树种统计信息"""
+            total = len(self.tree_manager.trees_list)
+            pushed = self.db.get_pushed_tree_count()
+            remaining = total - pushed
+
+            tier_counts = {}
+            for _, info in self.tree_manager.trees_list:
+                tier = info.get("tier", "未知")
+                tier_counts[tier] = tier_counts.get(tier, 0) + 1
+
+            lines = [f"树种统计", f"总数：{total}", f"已推送：{pushed}", f"剩余：{remaining}", ""]
+            for tier, count in sorted(tier_counts.items()):
+                lines.append(f"• {tier}：{count} 个")
+
+            return "\n".join(lines)
+
+        tools = ToolSet([
+            FunctionTool(
+                name="search_tree_by_name",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "树种名称（中文或英文）"}
+                    },
+                    "required": ["name"]
+                },
+                description="根据名称搜索树种信息",
+                handler=search_tree_by_name,
+            ),
+            FunctionTool(
+                name="get_tree_detail",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "tree_id": {"type": "string", "description": "树种ID"}
+                    },
+                    "required": ["tree_id"]
+                },
+                description="根据ID获取树种详细信息",
+                handler=get_tree_detail,
+            ),
+            FunctionTool(
+                name="list_trees_by_tier",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "tier": {"type": "string", "description": "稀有度：基础/稀有/史诗/传说/特殊"}
+                    },
+                    "required": ["tier"]
+                },
+                description="按稀有度列出树种",
+                handler=list_trees_by_tier,
+            ),
+            FunctionTool(
+                name="get_random_tree",
+                parameters={"type": "object", "properties": {}},
+                description="随机推荐一个树种",
+                handler=get_random_tree,
+            ),
+            FunctionTool(
+                name="get_tree_stats",
+                parameters={"type": "object", "properties": {}},
+                description="获取树种统计信息",
+                handler=get_tree_stats,
             ),
         ])
         return tools
@@ -489,18 +806,20 @@ class ForestRoomPlugin(Star):
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def on_keyword_message(self, event: AstrMessageEvent):
-        """监听群消息，检测关键词触发回复（优先固定回复，其次 AI 回复）"""
+        """监听群消息，检测关键词或@机器人触发回复"""
         if not self._platform_id:
             self._platform_id = event.get_platform_id()
 
         if not self.enabled or not self.keyword_reply_enabled:
             return
 
-        if not self.keyword_pattern:
-            return
-
         message_text = event.message_str
-        if not self.keyword_pattern.search(message_text):
+
+        # 检查是否触发：关键词 或 @机器人
+        is_keyword_trigger = self.keyword_pattern and self.keyword_pattern.search(message_text)
+        is_atme_trigger = event.is_atme()
+
+        if not is_keyword_trigger and not is_atme_trigger:
             return
 
         group_id = event.get_group_id()
@@ -522,28 +841,50 @@ class ForestRoomPlugin(Star):
         # 获取用户信息
         user_id = event.get_sender_id()
 
+        # 清空 AI 树种查询缓存
+        self._ai_queried_tree_ids = []
+
         # 构建打卡查询工具集
-        tools = self._build_checkin_tools(user_id, group_id)
+        checkin_tools = self._build_checkin_tools(user_id, group_id)
+
+        # 构建树种查询工具集
+        tree_tools = self._build_tree_tools()
+
+        # 合并工具集
+        all_tools = ToolSet(list(checkin_tools.tools) + list(tree_tools.tools))
 
         # 获取默认人设的系统提示词
         persona = self.context.persona_manager.get_default_persona(event.unified_msg_origin)
         system_prompt = persona.get("prompt", "") if persona else ""
-        system_prompt += "\n\n你可以使用工具查询用户的打卡记录，当用户询问打卡相关问题时，请调用相应的工具。"
+        system_prompt += "\n\n你可以使用工具查询用户的打卡记录和 Forest 树种信息。当用户询问打卡或树种相关问题时，请调用相应的工具。"
 
         # 获取当前 chat provider
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
 
         # 调用带工具的 AI
-        logger.info(f"检测到关键词触发: {message_text}")
+        trigger_type = "@机器人" if is_atme_trigger else "关键词"
+        logger.info(f"检测到{trigger_type}触发: {message_text}")
         try:
             response = await self.context.tool_loop_agent(
                 event=event,
                 chat_provider_id=provider_id,
                 prompt=message_text,
-                tools=tools,
+                tools=all_tools,
                 system_prompt=system_prompt,
             )
-            yield event.plain_result(response.completion_text)
+
+            # 构建消息组件
+            components = [Plain(response.completion_text)]
+
+            # 如果 AI 查询了树种，附加图片
+            if self._ai_queried_tree_ids:
+                for tree_id in self._ai_queried_tree_ids[:3]:  # 最多发送3张图片
+                    image_path = self.tree_manager.get_tree_image_path(tree_id)
+                    if image_path and image_path.exists():
+                        components.append(Image(file=str(image_path)))
+
+            yield event.result(MessageChain(components))
+
         except Exception as e:
             logger.error(f"AI 回复失败: {e}")
             yield event.plain_result("抱歉，处理您的请求时出现了问题。")
@@ -742,3 +1083,103 @@ class ForestRoomPlugin(Star):
             yield event.plain_result(f"✅ 已删除学习主题 {topic_id}")
         else:
             yield event.plain_result(f"⚠️ 主题 {topic_id} 不存在")
+
+    # === 树种功能 ===
+
+    @filter.command("今日树种")
+    async def today_tree(self, event: AstrMessageEvent):
+        """获取今日推送的树种"""
+        if not self._today_tree_message:
+            yield event.plain_result("今日还没有推送树种，请等待早安通知")
+            return
+
+        # 获取图片路径
+        image_path = None
+        if self._today_tree_id:
+            image_path = self.tree_manager.get_tree_image_path(self._today_tree_id)
+
+        # 构建消息链
+        components = [Plain(self._today_tree_message)]
+        if image_path and image_path.exists():
+            components.append(Image(file=str(image_path)))
+
+        yield event.result(MessageChain(components))
+
+    @filter.command("随机树种")
+    async def random_tree(self, event: AstrMessageEvent):
+        """随机抽取一个树种介绍"""
+        if not self.tree_manager.trees_list:
+            yield event.plain_result("树种数据未加载")
+            return
+
+        tree_id, info = random.choice(self.tree_manager.trees_list)
+        zh = info.get("zh", "")
+        en = info.get("en", "")
+        tier = info.get("tier", "")
+        desc = info.get("description", "")
+
+        message = f"{zh}\n"
+        if en:
+            message += f"英文名：{en}\n"
+        if tier:
+            message += f"稀有度：{tier}\n"
+        if desc:
+            message += desc
+
+        # 获取图片路径
+        image_path = self.tree_manager.get_tree_image_path(tree_id)
+
+        # 构建消息链
+        components = [Plain(message)]
+        if image_path and image_path.exists():
+            components.append(Image(file=str(image_path)))
+
+        yield event.result(MessageChain(components))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest树种状态")
+    async def tree_status(self, event: AstrMessageEvent):
+        """查看树种推送状态"""
+        total = len(self.tree_manager.trees_list)
+        pushed = self.db.get_pushed_tree_count()
+        remaining = total - pushed
+
+        yield event.plain_result(f"""🌲 树种推送状态
+总数：{total}
+已推送：{pushed}
+剩余：{remaining}
+进度：{pushed}/{total}""")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest重置树种")
+    async def reset_trees(self, event: AstrMessageEvent):
+        """重置树种推送状态"""
+        if self.db.reset_all_trees():
+            logger.info("已重置所有树种推送状态")
+            yield event.plain_result("✅ 已重置所有树种推送状态")
+        else:
+            yield event.plain_result("❌ 重置失败")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest搜索树种")
+    async def search_tree(self, event: AstrMessageEvent, keyword: str = ""):
+        """搜索树种"""
+        if not keyword:
+            yield event.plain_result("请输入搜索关键词，如：forest搜索树种 樱花")
+            return
+
+        results = self.tree_manager.search_trees(keyword)
+        if not results:
+            yield event.plain_result(f"未找到包含「{keyword}」的树种")
+            return
+
+        lines = [f"找到 {len(results)} 个匹配的树种："]
+        for tree_id, info in results[:10]:
+            zh = info.get("zh", "")
+            tier = info.get("tier", "")
+            lines.append(f"• {zh} [{tier}] (ID: {tree_id})")
+
+        if len(results) > 10:
+            lines.append(f"... 还有 {len(results) - 10} 个")
+
+        yield event.plain_result("\n".join(lines))

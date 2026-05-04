@@ -195,5 +195,11 @@
         "items": {
             "type": "object"
         }
+    },
+    "tree_notify_enabled": {
+        "description": "启用早安树种推送",
+        "type": "bool",
+        "hint": "是否在早安通知中附带每日树种介绍",
+        "default": true
     }
 }

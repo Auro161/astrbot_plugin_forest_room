@@ -42,6 +42,13 @@ class ForestDB:
             )""")
             conn.execute("""CREATE INDEX IF NOT EXISTS idx_topic_pushed ON topics(pushed_at)""")
 
+            # 树种推送记录表
+            conn.execute("""CREATE TABLE IF NOT EXISTS pushed_trees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tree_id TEXT NOT NULL UNIQUE,
+                pushed_at DATETIME NOT NULL
+            )""")
+
             conn.commit()
 
     # === 打卡相关 ===
@@ -239,6 +246,50 @@ class ForestDB:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute("""SELECT COUNT(*) FROM topics""")
+                return cursor.fetchone()[0]
+        except sqlite3.Error:
+            return 0
+
+    # === 树种推送相关 ===
+
+    def mark_tree_pushed(self, tree_id: str) -> bool:
+        """标记树种已推送"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO pushed_trees (tree_id, pushed_at)
+                       VALUES (?, ?)""",
+                    (tree_id, datetime.now())
+                )
+                conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def get_pushed_tree_ids(self) -> set:
+        """获取已推送的树种ID集合"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""SELECT tree_id FROM pushed_trees""")
+                return {row[0] for row in cursor.fetchall()}
+        except sqlite3.Error:
+            return set()
+
+    def reset_all_trees(self) -> bool:
+        """重置所有树种推送状态"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""DELETE FROM pushed_trees""")
+                conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def get_pushed_tree_count(self) -> int:
+        """获取已推送树种数量"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""SELECT COUNT(*) FROM pushed_trees""")
                 return cursor.fetchone()[0]
         except sqlite3.Error:
             return 0
