@@ -1105,14 +1105,6 @@ class ForestRoomPlugin(Star):
 
         yield event.chain_result(components)
 
-    @filter.command("随机树种")
-    async def random_tree(self, event: AstrMessageEvent):
-        """随机抽取一个树种介绍
-        注意：此命令不返回结果，由 AI 来生成回复
-        """
-        # 此命令不返回结果，由 on_keyword_message 函数中的 AI 来生成回复
-        return
-
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest树种状态")
     async def tree_status(self, event: AstrMessageEvent):
