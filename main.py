@@ -817,7 +817,7 @@ class ForestRoomPlugin(Star):
 
         # 检查是否触发：关键词 或 @机器人
         is_keyword_trigger = self.keyword_pattern and self.keyword_pattern.search(message_text)
-        is_atme_trigger = event.is_atme()
+        is_atme_trigger = event.is_at_or_wake_command
 
         if not is_keyword_trigger and not is_atme_trigger:
             return
@@ -854,7 +854,7 @@ class ForestRoomPlugin(Star):
         all_tools = ToolSet(list(checkin_tools.tools) + list(tree_tools.tools))
 
         # 获取默认人设的系统提示词
-        persona = self.context.persona_manager.get_default_persona(event.unified_msg_origin)
+        persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
         system_prompt = persona.get("prompt", "") if persona else ""
         system_prompt += "\n\n你可以使用工具查询用户的打卡记录和 Forest 树种信息。当用户询问打卡或树种相关问题时，请调用相应的工具。"
 
@@ -883,7 +883,7 @@ class ForestRoomPlugin(Star):
                     if image_path and image_path.exists():
                         components.append(Image(file=str(image_path)))
 
-            yield event.result(MessageChain(components))
+            yield event.chain_result(components)
 
         except Exception as e:
             logger.error(f"AI 回复失败: {e}")
@@ -1103,38 +1103,15 @@ class ForestRoomPlugin(Star):
         if image_path and image_path.exists():
             components.append(Image(file=str(image_path)))
 
-        yield event.result(MessageChain(components))
+        yield event.chain_result(components)
 
     @filter.command("随机树种")
     async def random_tree(self, event: AstrMessageEvent):
-        """随机抽取一个树种介绍"""
-        if not self.tree_manager.trees_list:
-            yield event.plain_result("树种数据未加载")
-            return
-
-        tree_id, info = random.choice(self.tree_manager.trees_list)
-        zh = info.get("zh", "")
-        en = info.get("en", "")
-        tier = info.get("tier", "")
-        desc = info.get("description", "")
-
-        message = f"{zh}\n"
-        if en:
-            message += f"英文名：{en}\n"
-        if tier:
-            message += f"稀有度：{tier}\n"
-        if desc:
-            message += desc
-
-        # 获取图片路径
-        image_path = self.tree_manager.get_tree_image_path(tree_id)
-
-        # 构建消息链
-        components = [Plain(message)]
-        if image_path and image_path.exists():
-            components.append(Image(file=str(image_path)))
-
-        yield event.result(MessageChain(components))
+        """随机抽取一个树种介绍
+        注意：此命令不返回结果，由 AI 来生成回复
+        """
+        # 此命令不返回结果，由 on_keyword_message 函数中的 AI 来生成回复
+        return
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest树种状态")
