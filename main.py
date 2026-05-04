@@ -17,7 +17,9 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain
-from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.api import FunctionTool, ToolSet
+
+# 不要使用这样的from astrbot.core.agent.tool import FunctionTool, ToolSet，这个会报错，需要使用这样的from astrbot.api import FunctionTool, ToolSet
 
 from .database import ForestDB
 
