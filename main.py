@@ -128,6 +128,8 @@ class ForestRoomPlugin(Star):
         # === 关键词唤起配置 ===
         self.keyword_reply_enabled = self.config.get("keyword_reply_enabled", True)
         self.keywords = self.config.get("keywords", ["果果"])
+        # 过滤空字符串关键词，避免匹配任意内容
+        self.keywords = [kw for kw in self.keywords if kw and kw.strip()]
         if self.keywords:
             pattern = "|".join(re.escape(kw) for kw in self.keywords)
             self.keyword_pattern = re.compile(f"({pattern})")
@@ -384,7 +386,9 @@ class ForestRoomPlugin(Star):
         # 如果全部推送完，重置
         if not unpushed_ids:
             logger.info("所有树种已推送完毕，重新循环")
-            self.db.reset_all_trees()
+            if not self.db.reset_all_trees():
+                logger.error("重置树种推送状态失败")
+                return None, None
             unpushed_ids = all_tree_ids
 
         # 随机选择一个未推送的树种
@@ -523,6 +527,27 @@ class ForestRoomPlugin(Star):
         timestamps.append(now)
         return True
 
+    def _parse_time(self, time_str: str) -> int:
+        """
+        解析时间字符串为分钟数
+
+        Args:
+            time_str: 时间字符串，支持 "HH:MM" 或 "H:MM" 格式
+
+        Returns:
+            int: 从午夜开始的分钟数，解析失败返回 -1
+        """
+        try:
+            parts = time_str.strip().split(":")
+            if len(parts) != 2:
+                return -1
+            hours, minutes = int(parts[0]), int(parts[1])
+            if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+                return -1
+            return hours * 60 + minutes
+        except (ValueError, AttributeError):
+            return -1
+
     def _is_in_time_range(self, current_time: str, start_time: str, end_time: str) -> bool:
         """
         判断当前时间是否在指定时间段内
@@ -534,11 +559,16 @@ class ForestRoomPlugin(Star):
             end_time: 结束时间 "HH:MM"
 
         Returns:
-            bool: 是否在时间段内
+            bool: 是否在时间段内，解析失败返回 False
         """
-        current = int(current_time[:2]) * 60 + int(current_time[3:5])
-        start = int(start_time[:2]) * 60 + int(start_time[3:5])
-        end = int(end_time[:2]) * 60 + int(end_time[3:5])
+        current = self._parse_time(current_time)
+        start = self._parse_time(start_time)
+        end = self._parse_time(end_time)
+
+        # 任一时间解析失败，返回 False
+        if current < 0 or start < 0 or end < 0:
+            logger.warning(f"时间格式错误: current={current_time}, start={start_time}, end={end_time}")
+            return False
 
         if start <= end:
             # 不跨天：如 06:00-10:00
@@ -762,7 +792,7 @@ class ForestRoomPlugin(Star):
             # 检查时间段
             current_time = datetime.now().strftime("%H:%M")
             if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
-                return "⚠️ 晚安车报名时间为 18:00-24:00，当前不在报名时间内"
+                return f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
             
             user_name = "用户"  # AI 上下文中没有用户名，使用默认值
             success = self.db.signup_night_bus(user_id, group_id, user_name)
@@ -997,31 +1027,39 @@ class ForestRoomPlugin(Star):
         current_time = datetime.now().strftime("%H:%M")
         reply = None
 
-        # 检测早安关键词
+        # 早安关键词（按长度降序，优先匹配更长的关键词）
         morning_keywords = [
-            "早安", "早上好",  # 基础词
-            "早", "早啊", "早早早",  # 简短词
-            "早呀", "早哟", "早安呀"  # 语气词变体
+            "早安呀", "早上好", "早早早", "早呀", "早哟", "早啊",  # 长词优先
+            "早安", "早"  # 短词放后面
         ]
-        if any(kw in message_text for kw in morning_keywords):
-            if self._is_in_time_range(current_time, self.morning_greeting_start, self.morning_greeting_end):
-                reply = random.choice(self.morning_greeting_replies)
-                logger.info(f"检测到早安关键词: {message_text}")
-
-        # 检测晚安关键词
+        # 晚安关键词（按长度降序）
         night_keywords = [
-            "晚安", "晚上好",  # 基础词
-            "晚", "晚啦",  # 简短词
-            "晚安呀", "晚安哟", "睡啦",  # 语气词变体
-            "安安", "好梦", "早点睡"  # 其他相关词
+            "晚安车",  # 特殊词，用于排除
+            "晚安呀", "晚安哟", "晚上好", "早点睡",  # 长词优先
+            "晚安", "晚啦", "睡啦", "安安", "好梦", "晚"  # 短词放后面
         ]
-        if any(kw in message_text for kw in night_keywords):
-            # 如果消息包含"晚安车"，不触发晚安问候，让其他监听器处理
-            if "晚安车" in message_text:
-                pass
-            elif self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
-                reply = random.choice(self.night_greeting_replies)
-                logger.info(f"检测到晚安关键词: {message_text}")
+
+        # 检测早安关键词（互斥检测）
+        for kw in morning_keywords:
+            if kw in message_text:
+                if self._is_in_time_range(current_time, self.morning_greeting_start, self.morning_greeting_end):
+                    if self.morning_greeting_replies:
+                        reply = random.choice(self.morning_greeting_replies)
+                        logger.info(f"检测到早安关键词: {kw}")
+                break  # 匹配成功后立即退出，避免重复匹配
+
+        # 检测晚安关键词（仅在早安未匹配时检测）
+        if reply is None:
+            for kw in night_keywords:
+                if kw in message_text:
+                    # 如果消息包含"晚安车"，不触发晚安问候
+                    if kw == "晚安车":
+                        break
+                    if self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
+                        if self.night_greeting_replies:
+                            reply = random.choice(self.night_greeting_replies)
+                            logger.info(f"检测到晚安关键词: {kw}")
+                    break  # 匹配成功后立即退出
 
         if reply:
             yield event.plain_result(reply)

@@ -70,13 +70,16 @@ class ForestDB:
     def has_checked_today(self, user_id: str, group_id: str) -> bool:
         """查询今日是否已打卡"""
         today = datetime.now().strftime("%Y-%m-%d")
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """SELECT 1 FROM checkins
-                   WHERE user_id = ? AND group_id = ? AND checkin_date = ?""",
-                (user_id, group_id, today)
-            )
-            return cursor.fetchone() is not None
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT 1 FROM checkins
+                       WHERE user_id = ? AND group_id = ? AND checkin_date = ?""",
+                    (user_id, group_id, today)
+                )
+                return cursor.fetchone() is not None
+        except sqlite3.Error:
+            return False
 
     def checkin(self, user_id: str, group_id: str, user_name: str = None) -> bool:
         """
@@ -108,50 +111,56 @@ class ForestDB:
         today = datetime.now()
         week_start = today - timedelta(days=today.weekday())
         week_start_str = week_start.strftime("%Y-%m-%d")
-
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """SELECT user_id, MAX(user_name) as user_name, COUNT(DISTINCT checkin_date) as days
-                   FROM checkins
-                   WHERE group_id = ? AND checkin_date >= ?
-                   GROUP BY user_id
-                   ORDER BY days DESC
-                   LIMIT ?""",
-                (group_id, week_start_str, top_n)
-            )
-            return cursor.fetchall()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT user_id, MAX(user_name) as user_name, COUNT(DISTINCT checkin_date) as days
+                       FROM checkins
+                       WHERE group_id = ? AND checkin_date >= ?
+                       GROUP BY user_id
+                       ORDER BY days DESC
+                       LIMIT ?""",
+                    (group_id, week_start_str, top_n)
+                )
+                return cursor.fetchall()
+        except sqlite3.Error:
+            return []
 
     def get_user_week_days(self, user_id: str, group_id: str) -> int:
         """获取用户本周打卡天数"""
         today = datetime.now()
         week_start = today - timedelta(days=today.weekday())
         week_start_str = week_start.strftime("%Y-%m-%d")
-
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """SELECT COUNT(DISTINCT checkin_date)
-                   FROM checkins
-                   WHERE user_id = ? AND group_id = ? AND checkin_date >= ?""",
-                (user_id, group_id, week_start_str)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else 0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT COUNT(DISTINCT checkin_date)
+                       FROM checkins
+                       WHERE user_id = ? AND group_id = ? AND checkin_date >= ?""",
+                    (user_id, group_id, week_start_str)
+                )
+                result = cursor.fetchone()
+                return result[0] if result else 0
+        except sqlite3.Error:
+            return 0
 
     def get_user_checkin_dates(self, user_id: str, group_id: str) -> List[str]:
         """获取用户本周打卡日期列表"""
         today = datetime.now()
         week_start = today - timedelta(days=today.weekday())
         week_start_str = week_start.strftime("%Y-%m-%d")
-
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """SELECT DISTINCT checkin_date
-                   FROM checkins
-                   WHERE user_id = ? AND group_id = ? AND checkin_date >= ?
-                   ORDER BY checkin_date ASC""",
-                (user_id, group_id, week_start_str)
-            )
-            return [row[0] for row in cursor.fetchall()]
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT DISTINCT checkin_date
+                       FROM checkins
+                       WHERE user_id = ? AND group_id = ? AND checkin_date >= ?
+                       ORDER BY checkin_date ASC""",
+                    (user_id, group_id, week_start_str)
+                )
+                return [row[0] for row in cursor.fetchall()]
+        except sqlite3.Error:
+            return []
 
     def get_user_missed_days(self, user_id: str, group_id: str) -> List[str]:
         """获取用户本周未打卡日期列表（截至今天）"""
@@ -327,7 +336,6 @@ class ForestDB:
                 return (result[0], result[1]) if result else None
         except sqlite3.Error:
             return None
-            return 0
 
     # === 晚安车报名相关 ===
 
@@ -366,69 +374,85 @@ class ForestDB:
     def get_night_bus_signups(self, group_id: str) -> List[Tuple[str, str]]:
         """获取今日晚安车报名列表，返回 [(user_id, user_name)]"""
         today = datetime.now().strftime("%Y-%m-%d")
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """SELECT user_id, user_name FROM night_bus_signups
-                   WHERE group_id = ? AND signup_date = ?
-                   ORDER BY signup_time ASC""",
-                (group_id, today)
-            )
-            return cursor.fetchall()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT user_id, user_name FROM night_bus_signups
+                       WHERE group_id = ? AND signup_date = ?
+                       ORDER BY signup_time ASC""",
+                    (group_id, today)
+                )
+                return cursor.fetchall()
+        except sqlite3.Error:
+            return []
 
     def get_night_bus_count(self, group_id: str) -> int:
         """获取今日晚安车报名人数"""
         today = datetime.now().strftime("%Y-%m-%d")
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """SELECT COUNT(*) FROM night_bus_signups
-                   WHERE group_id = ? AND signup_date = ?""",
-                (group_id, today)
-            )
-            return cursor.fetchone()[0]
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT COUNT(*) FROM night_bus_signups
+                       WHERE group_id = ? AND signup_date = ?""",
+                    (group_id, today)
+                )
+                return cursor.fetchone()[0]
+        except sqlite3.Error:
+            return 0
 
     def get_user_night_bus_count(self, user_id: str, group_id: str) -> int:
         """获取用户累计参加晚安车次数"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """SELECT COUNT(DISTINCT signup_date) FROM night_bus_signups
-                   WHERE user_id = ? AND group_id = ?""",
-                (user_id, group_id)
-            )
-            return cursor.fetchone()[0]
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT COUNT(DISTINCT signup_date) FROM night_bus_signups
+                       WHERE user_id = ? AND group_id = ?""",
+                    (user_id, group_id)
+                )
+                return cursor.fetchone()[0]
+        except sqlite3.Error:
+            return 0
 
     def get_group_night_bus_stats(self, group_id: str, days: int = 7) -> dict:
         """获取群晚安车统计（最近 N 天）"""
         date_limit = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        with sqlite3.connect(self.db_path) as conn:
-            # 总发车次数（报名人数 > 2 的天数）
-            cursor = conn.execute(
-                """SELECT signup_date, COUNT(*) as cnt FROM night_bus_signups
-                   WHERE group_id = ? AND signup_date >= ?
-                   GROUP BY signup_date
-                   HAVING cnt > 2""",
-                (group_id, date_limit)
-            )
-            bus_days = cursor.fetchall()
-            # 总报名人次
-            cursor = conn.execute(
-                """SELECT COUNT(*) FROM night_bus_signups
-                   WHERE group_id = ? AND signup_date >= ?""",
-                (group_id, date_limit)
-            )
-            total_signups = cursor.fetchone()[0]
-            # 最活跃乘客
-            cursor = conn.execute(
-                """SELECT user_name, COUNT(*) as cnt FROM night_bus_signups
-                   WHERE group_id = ? AND signup_date >= ?
-                   GROUP BY user_id
-                   ORDER BY cnt DESC
-                   LIMIT 3""",
-                (group_id, date_limit)
-            )
-            top_passengers = cursor.fetchall()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # 总发车次数（报名人数 > 2 的天数）
+                cursor = conn.execute(
+                    """SELECT signup_date, COUNT(*) as cnt FROM night_bus_signups
+                       WHERE group_id = ? AND signup_date >= ?
+                       GROUP BY signup_date
+                       HAVING cnt > 2""",
+                    (group_id, date_limit)
+                )
+                bus_days = cursor.fetchall()
+                # 总报名人次
+                cursor = conn.execute(
+                    """SELECT COUNT(*) FROM night_bus_signups
+                       WHERE group_id = ? AND signup_date >= ?""",
+                    (group_id, date_limit)
+                )
+                total_signups = cursor.fetchone()[0]
+                # 最活跃乘客
+                cursor = conn.execute(
+                    """SELECT user_name, COUNT(*) as cnt FROM night_bus_signups
+                       WHERE group_id = ? AND signup_date >= ?
+                       GROUP BY user_id
+                       ORDER BY cnt DESC
+                       LIMIT 3""",
+                    (group_id, date_limit)
+                )
+                top_passengers = cursor.fetchall()
 
-        return {
-            "bus_days": len(bus_days),
-            "total_signups": total_signups,
-            "top_passengers": [(name or "未知", cnt) for name, cnt in top_passengers]
-        }
+            return {
+                "bus_days": len(bus_days),
+                "total_signups": total_signups,
+                "top_passengers": [(name or "未知", cnt) for name, cnt in top_passengers]
+            }
+        except sqlite3.Error:
+            return {
+                "bus_days": 0,
+                "total_signups": 0,
+                "top_passengers": []
+            }
