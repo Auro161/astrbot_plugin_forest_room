@@ -147,6 +147,15 @@ class ForestRoomPlugin(Star):
         # === 树种推送配置 ===
         self.tree_notify_enabled = self.config.get("tree_notify_enabled", True)
 
+        # === 早安晚安自动回复配置 ===
+        self.greeting_reply_enabled = self.config.get("greeting_reply_enabled", True)
+        self.morning_greeting_start = self.config.get("morning_greeting_start", "06:00")
+        self.morning_greeting_end = self.config.get("morning_greeting_end", "10:00")
+        self.morning_greeting_replies = self.config.get("morning_greeting_replies", [])
+        self.night_greeting_start = self.config.get("night_greeting_start", "21:00")
+        self.night_greeting_end = self.config.get("night_greeting_end", "02:00")
+        self.night_greeting_replies = self.config.get("night_greeting_replies", [])
+
         # === 数据库初始化 ===
         data_dir = StarTools.get_data_dir()
         db_path = data_dir / "forest.db"
@@ -453,6 +462,30 @@ class ForestRoomPlugin(Star):
 
         timestamps.append(now)
         return True
+
+    def _is_in_time_range(self, current_time: str, start_time: str, end_time: str) -> bool:
+        """
+        判断当前时间是否在指定时间段内
+        支持跨天场景（如 21:00-02:00）
+
+        Args:
+            current_time: 当前时间 "HH:MM"
+            start_time: 开始时间 "HH:MM"
+            end_time: 结束时间 "HH:MM"
+
+        Returns:
+            bool: 是否在时间段内
+        """
+        current = int(current_time[:2]) * 60 + int(current_time[3:5])
+        start = int(start_time[:2]) * 60 + int(start_time[3:5])
+        end = int(end_time[:2]) * 60 + int(end_time[3:5])
+
+        if start <= end:
+            # 不跨天：如 06:00-10:00
+            return start <= current <= end
+        else:
+            # 跨天：如 21:00-02:00
+            return current >= start or current <= end
 
     def _match_fixed_reply(self, message_text: str) -> str | None:
         """匹配固定回复规则，返回回复内容或 None"""
@@ -801,6 +834,64 @@ class ForestRoomPlugin(Star):
         logger.info(f"触发固定回复: {message_text}")
         yield event.plain_result(fixed_reply)
 
+    # === 早安晚安自动回复 ===
+
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def on_greeting_message(self, event: AstrMessageEvent):
+        """监听群消息，检测早安晚安关键词"""
+        if not self._platform_id:
+            self._platform_id = event.get_platform_id()
+
+        if not self.enabled or not self.greeting_reply_enabled:
+            return
+
+        message_text = event.message_str.strip()
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+
+        # 白名单检查
+        if self.whitelist and group_id not in self.whitelist:
+            return
+
+        # 黑名单检查
+        if group_id in self.blacklist:
+            return
+
+        # 限流检查（复用关键词限流）
+        if not self._check_keyword_rate_limit(group_id):
+            return
+
+        current_time = datetime.now().strftime("%H:%M")
+        reply = None
+
+        # 检测早安关键词
+        morning_keywords = [
+            "早安", "早上好",  # 基础词
+            "早", "早啊", "早早早",  # 简短词
+            "早呀", "早哟", "早安呀"  # 语气词变体
+        ]
+        if any(kw in message_text for kw in morning_keywords):
+            if self._is_in_time_range(current_time, self.morning_greeting_start, self.morning_greeting_end):
+                reply = random.choice(self.morning_greeting_replies)
+                logger.info(f"检测到早安关键词: {message_text}")
+
+        # 检测晚安关键词
+        night_keywords = [
+            "晚安", "晚上好",  # 基础词
+            "晚", "晚啦",  # 简短词
+            "晚安呀", "晚安哟", "睡啦",  # 语气词变体
+            "安安", "好梦", "早点睡"  # 其他相关词
+        ]
+        if any(kw in message_text for kw in night_keywords):
+            if self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
+                reply = random.choice(self.night_greeting_replies)
+                logger.info(f"检测到晚安关键词: {message_text}")
+
+        if reply:
+            yield event.plain_result(reply)
+
     # === 关键词唤起 AI 回复 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -1011,6 +1102,24 @@ class ForestRoomPlugin(Star):
         self.config["night_notify_enabled"] = False
         self.config.save_config()
         yield event.plain_result("❌ 晚安通知已关闭")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest问候开启")
+    async def enable_greeting(self, event: AstrMessageEvent):
+        """开启早安晚安自动回复"""
+        self.greeting_reply_enabled = True
+        self.config["greeting_reply_enabled"] = True
+        self.config.save_config()
+        yield event.plain_result("✅ 早安晚安自动回复已开启")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest问候关闭")
+    async def disable_greeting(self, event: AstrMessageEvent):
+        """关闭早安晚安自动回复"""
+        self.greeting_reply_enabled = False
+        self.config["greeting_reply_enabled"] = False
+        self.config.save_config()
+        yield event.plain_result("❌ 早安晚安自动回复已关闭")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest统计开启")

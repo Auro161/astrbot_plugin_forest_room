@@ -201,5 +201,67 @@
         "type": "bool",
         "hint": "是否在早安通知中附带每日树种介绍",
         "default": true
+    },
+    "greeting_reply_enabled": {
+        "description": "启用早安晚安自动回复",
+        "type": "bool",
+        "hint": "是否启用早安晚安自动回复功能",
+        "default": true
+    },
+    "morning_greeting_start": {
+        "description": "早安回复开始时间",
+        "type": "string",
+        "hint": "早安回复时间段的开始时间，如 06:00",
+        "default": "06:00"
+    },
+    "morning_greeting_end": {
+        "description": "早安回复结束时间",
+        "type": "string",
+        "hint": "早安回复时间段的结束时间，如 10:00",
+        "default": "10:00"
+    },
+    "morning_greeting_replies": {
+        "description": "早安回复内容列表",
+        "type": "list",
+        "hint": "检测到早安关键词后的回复内容，随机选择一条",
+        "default": [
+            "早上好呀~新的一天，元气满满！",
+            "早安~今天也要加油哦！",
+            "早呀~美好的一天开始啦！",
+            "早上好~记得打卡种树哦！",
+            "早安呐~又是充满希望的一天！",
+            "早~愿你今天心情美美哒！"
+        ],
+        "items": {
+            "type": "string"
+        }
+    },
+    "night_greeting_start": {
+        "description": "晚安回复开始时间",
+        "type": "string",
+        "hint": "晚安回复时间段的开始时间，如 21:00",
+        "default": "21:00"
+    },
+    "night_greeting_end": {
+        "description": "晚安回复结束时间",
+        "type": "string",
+        "hint": "晚安回复时间段的结束时间，支持跨天，如 02:00",
+        "default": "02:00"
+    },
+    "night_greeting_replies": {
+        "description": "晚安回复内容列表",
+        "type": "list",
+        "hint": "检测到晚安关键词后的回复内容，随机选择一条",
+        "default": [
+            "晚安~做个好梦，明天继续种树！",
+            "晚安呐~早点休息哦！",
+            "晚安~好梦相伴，明天见！",
+            "睡个好觉~明天又是元气满满的一天！",
+            "晚安~放下手机，安心入睡吧！",
+            "好梦~愿星星守护你的梦境！"
+        ],
+        "items": {
+            "type": "string"
+        }
     }
 }

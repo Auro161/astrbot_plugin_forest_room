@@ -38,6 +38,13 @@
 - 配置关键词触发固定回复
 - 例如：发送"安装包"自动回复官方下载链接
 
+### 👋 早安晚安自动回复
+- 检测群成员发送的早安/晚安问候
+- 只在配置的时间段内触发回复
+- 早安触发词：早安、早上好、早、早啊、早早早、早呀、早哟、早安呀
+- 晚安触发词：晚安、晚上好、晚、晚啦、晚安呀、晚安哟、睡啦、安安、好梦、早点睡
+- 多条回复模板随机选择
+
 ## 安装
 
 将本插件克隆到 AstrBot 的 `addons/plugins/` 目录下：
@@ -128,6 +135,18 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 |--------|------|--------|------|
 | `tree_notify_enabled` | bool | `true` | 是否在早安通知中附带树种介绍 |
 
+### 早安晚安自动回复配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `greeting_reply_enabled` | bool | `true` | 是否启用早安晚安自动回复 |
+| `morning_greeting_start` | string | `06:00` | 早安回复开始时间 |
+| `morning_greeting_end` | string | `10:00` | 早安回复结束时间 |
+| `morning_greeting_replies` | list | 见配置 | 早安回复内容列表（随机选择） |
+| `night_greeting_start` | string | `21:00` | 晚安回复开始时间 |
+| `night_greeting_end` | string | `02:00` | 晚安回复结束时间（支持跨天） |
+| `night_greeting_replies` | list | 见配置 | 晚安回复内容列表（随机选择） |
+
 ## 命令列表
 
 ### 基础命令
@@ -160,6 +179,7 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 | `forest晚安开启/关闭` | 开启/关闭晚安通知 |
 | `forest统计开启/关闭` | 开启/关闭周统计推送 |
 | `forest主题开启/关闭` | 开启/关闭学习目标推送 |
+| `forest问候开启/关闭` | 开启/关闭早安晚安自动回复 |
 
 ### 学习主题管理（管理员）
 
@@ -224,6 +244,24 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 用户：安装包在哪下载？
 机器人：Forest 官方下载链接：https://www.upwardsware.com/zh_CN/
 ```
+
+### 早安晚安自动回复
+
+```
+用户：早安
+机器人：早上好呀~新的一天，元气满满！
+
+用户：晚安
+机器人：晚安~做个好梦，明天继续种树！
+
+用户：早呀
+机器人：早安~今天也要加油哦！
+
+用户：晚安呐
+机器人：晚安~好梦相伴，明天见！
+```
+
+注意：只有在配置的时间段内才会触发回复，默认早安 06:00-10:00，晚安 21:00-02:00。
 
 ### 树种功能
 

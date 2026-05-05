@@ -9,6 +9,7 @@
 - 树种推送与查询系统
 - 关键词唤起 AI 智能回复
 - 关键词固定回复规则
+- 早安晚安自动回复
 
 ## 技术栈
 
@@ -149,6 +150,39 @@ if image_path and image_path.exists():
 yield event.result(MessageChain(components))
 ```
 
+### 7. 早安晚安自动回复
+
+**触发词**：
+- 早安：早安、早上好、早、早啊、早早早、早呀、早哟、早安呀
+- 晚安：晚安、晚上好、晚、晚啦、晚安呀、晚安哟、睡啦、安安、好梦、早点睡
+
+**时间段判断**：
+```python
+def _is_in_time_range(self, current_time: str, start_time: str, end_time: str) -> bool:
+    current = int(current_time[:2]) * 60 + int(current_time[3:5])
+    start = int(start_time[:2]) * 60 + int(start_time[3:5])
+    end = int(end_time[:2]) * 60 + int(end_time[3:5])
+
+    if start <= end:
+        return start <= current <= end
+    else:
+        # 跨天：如 21:00-02:00
+        return current >= start or current <= end
+```
+
+**消息处理器**：
+- `on_greeting_message` - 监听群消息，检测早安晚安关键词
+- 白名单/黑名单过滤
+- 复用关键词限流配置
+- 从回复列表随机选择一条回复
+
+**配置项**：
+- `greeting_reply_enabled` - 启用开关
+- `morning_greeting_start/end` - 早安时间段
+- `night_greeting_start/end` - 晚安时间段
+- `morning_greeting_replies` - 早安回复列表
+- `night_greeting_replies` - 晚安回复列表
+
 ## 配置系统
 
 配置项定义在 `_conf_schema.json`，通过 AstrBot 管理面板配置。
@@ -183,6 +217,7 @@ async def admin_handler(self, event: AstrMessageEvent):
 
 - `on_message` - 处理房间密钥提取
 - `on_fixed_reply_message` - 处理固定回复（优先级高于 AI 回复）
+- `on_greeting_message` - 处理早安晚安自动回复
 - `on_keyword_message` - 处理关键词/@机器人 AI 回复（含树种查询）
 - `on_checkin_message` - 处理打卡
 
