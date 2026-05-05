@@ -72,7 +72,7 @@
         "description": "早起通知文案",
         "type": "string",
         "hint": "早起打卡通知的内容",
-        "default": "🌞 早上好！新的一天开始了，快来打卡种树吧！"
+        "default": "早上好！新的一天开始了，快来打卡种树吧！"
     },
     "night_notify_enabled": {
         "description": "启用晚安通知",
@@ -99,7 +99,7 @@
         "description": "晚安通知文案",
         "type": "string",
         "hint": "晚安通知的内容",
-        "default": "🌙 夜深了，该休息啦，晚安！明天继续种树~"
+        "default": "夜深了，该休息啦，晚安！明天继续种树~"
     },
     "weekstat_enabled": {
         "description": "启用周统计推送",

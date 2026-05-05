@@ -106,13 +106,13 @@ class ForestRoomPlugin(Star):
         self.morning_notify_enabled = self.config.get("morning_notify_enabled", True)
         self.morning_notify_time = self.config.get("morning_notify_time", "07:00")
         self.morning_notify_days = self.config.get("morning_notify_days", [1, 2, 3, 4, 5, 6, 0])
-        self.morning_notify_text = self.config.get("morning_notify_text", "🌞 早上好！新的一天开始了，快来打卡种树吧！")
+        self.morning_notify_text = self.config.get("morning_notify_text", "早上好！新的一天开始了，快来打卡种树吧！")
 
         # 晚安通知
         self.night_notify_enabled = self.config.get("night_notify_enabled", True)
         self.night_notify_time = self.config.get("night_notify_time", "22:00")
         self.night_notify_days = self.config.get("night_notify_days", [0, 1, 2, 3, 4, 5, 6])
-        self.night_notify_text = self.config.get("night_notify_text", "🌙 夜深了，该休息啦，晚安！明天继续种树~")
+        self.night_notify_text = self.config.get("night_notify_text", "夜深了，该休息啦，晚安！明天继续种树~")
 
         # 周统计
         self.weekstat_enabled = self.config.get("weekstat_enabled", True)
