@@ -4,9 +4,12 @@ Forest 插件数据库操作封装
 """
 
 import sqlite3
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class ForestDB:
@@ -78,7 +81,8 @@ class ForestDB:
                     (user_id, group_id, today)
                 )
                 return cursor.fetchone() is not None
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def checkin(self, user_id: str, group_id: str, user_name: str = None) -> bool:
@@ -224,7 +228,8 @@ class ForestDB:
                 )
                 conn.commit()
             return True
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def reset_all_topics(self) -> bool:
@@ -234,7 +239,8 @@ class ForestDB:
                 conn.execute("""UPDATE topics SET pushed_at = NULL""")
                 conn.commit()
             return True
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def list_topics(self) -> List[Tuple[int, str, Optional[str]]]:
@@ -261,7 +267,8 @@ class ForestDB:
                 )
                 conn.commit()
                 return cursor.rowcount > 0
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def get_topic_count(self) -> int:
@@ -286,7 +293,8 @@ class ForestDB:
                 )
                 conn.commit()
             return True
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def get_pushed_tree_ids(self) -> set:
@@ -305,7 +313,8 @@ class ForestDB:
                 conn.execute("""DELETE FROM pushed_trees""")
                 conn.commit()
             return True
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def get_pushed_tree_count(self) -> int:
@@ -353,7 +362,8 @@ class ForestDB:
                 )
                 conn.commit()
                 return cursor.rowcount > 0
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def cancel_night_bus(self, user_id: str, group_id: str) -> bool:
@@ -368,7 +378,8 @@ class ForestDB:
                 )
                 conn.commit()
                 return cursor.rowcount > 0
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            logger.error(f"查询打卡状态失败: {e}")
             return False
 
     def get_night_bus_signups(self, group_id: str) -> List[Tuple[str, str]]:

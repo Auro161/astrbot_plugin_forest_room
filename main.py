@@ -89,79 +89,8 @@ class ForestRoomPlugin(Star):
         super().__init__(context)
         self.config = config or {}
 
-        # === 基础配置 ===
-        self.enabled = self.config.get("enabled", True)
-        self.reply_format = self.config.get("reply_format", "{key}")
-        self.whitelist = self.config.get("whitelist", [])
-        self.blacklist = self.config.get("blacklist", [])
-
-        # === 限流配置 ===
-        self.rate_limit_enabled = self.config.get("rate_limit_enabled", True)
-        self.rate_limit_window = self.config.get("rate_limit_window", 60)
-        self.rate_limit_count = self.config.get("rate_limit_count", 10)
-        self.group_timestamps: defaultdict[str, deque] = defaultdict(deque)
-
-        # === 通知配置 ===
-        # 早安通知
-        self.morning_notify_enabled = self.config.get("morning_notify_enabled", True)
-        self.morning_notify_time = self.config.get("morning_notify_time", "07:00")
-        self.morning_notify_days = self.config.get("morning_notify_days", [1, 2, 3, 4, 5, 6, 0])
-        self.morning_notify_text = self.config.get("morning_notify_text", "早上好！新的一天开始了，快来打卡种树吧！")
-
-        # 晚安通知
-        self.night_notify_enabled = self.config.get("night_notify_enabled", True)
-        self.night_notify_time = self.config.get("night_notify_time", "22:00")
-        self.night_notify_days = self.config.get("night_notify_days", [0, 1, 2, 3, 4, 5, 6])
-        self.night_notify_text = self.config.get("night_notify_text", "夜深了，该休息啦，晚安！明天继续种树~")
-
-        # 周统计
-        self.weekstat_enabled = self.config.get("weekstat_enabled", True)
-        self.weekstat_day = self.config.get("weekstat_day", 1)
-        self.weekstat_time = self.config.get("weekstat_time", "07:00")
-        self.rank_top_n = self.config.get("rank_top_n", 5)
-
-        # 学习目标
-        self.topic_notify_enabled = self.config.get("topic_notify_enabled", True)
-        self.topic_notify_day = self.config.get("topic_notify_day", 1)
-        self.topic_notify_time = self.config.get("topic_notify_time", "08:00")
-
-        # === 关键词唤起配置 ===
-        self.keyword_reply_enabled = self.config.get("keyword_reply_enabled", True)
-        self.keywords = self.config.get("keywords", ["果果"])
-        # 过滤空字符串关键词，避免匹配任意内容
-        self.keywords = [kw for kw in self.keywords if kw and kw.strip()]
-        if self.keywords:
-            pattern = "|".join(re.escape(kw) for kw in self.keywords)
-            self.keyword_pattern = re.compile(f"({pattern})")
-        else:
-            self.keyword_pattern = None
-
-        # 关键词独立限流
-        self.keyword_rate_limit_enabled = self.config.get("keyword_rate_limit_enabled", True)
-        self.keyword_rate_limit_window = self.config.get("keyword_rate_limit_window", 60)
-        self.keyword_rate_limit_count = self.config.get("keyword_rate_limit_count", 5)
-        self.keyword_timestamps: defaultdict[str, deque] = defaultdict(deque)
-
-        # === 固定回复配置 ===
-        self.fixed_reply_enabled = self.config.get("fixed_reply_enabled", True)
-        self.fixed_reply_rules = self.config.get("fixed_reply_rules", [])
-
-        # === 树种推送配置 ===
-        self.tree_notify_enabled = self.config.get("tree_notify_enabled", True)
-
-        # === 早安晚安自动回复配置 ===
-        self.greeting_reply_enabled = self.config.get("greeting_reply_enabled", True)
-        self.morning_greeting_start = self.config.get("morning_greeting_start", "06:00")
-        self.morning_greeting_end = self.config.get("morning_greeting_end", "10:00")
-        self.morning_greeting_replies = self.config.get("morning_greeting_replies", [])
-        self.night_greeting_start = self.config.get("night_greeting_start", "21:00")
-        self.night_greeting_end = self.config.get("night_greeting_end", "02:00")
-        self.night_greeting_replies = self.config.get("night_greeting_replies", [])
-
-        # === 晚安车报名配置 ===
-        self.night_bus_enabled = self.config.get("night_bus_enabled", True)
-        self.night_bus_start = self.config.get("night_bus_start", "18:00")
-        self.night_bus_end = self.config.get("night_bus_end", "00:00")
+        # 初始化所有配置项
+        self._init_configs()
 
         # === 数据库初始化 ===
         data_dir = StarTools.get_data_dir()
@@ -180,14 +109,142 @@ class ForestRoomPlugin(Star):
         # === 今日树种缓存 ===
         self._today_tree_message: str | None = None
         self._today_tree_id: str | None = None
+        self._tree_cache_lock = asyncio.Lock()  # 树种缓存锁
 
         # === AI 树种查询缓存 ===
         self._ai_queried_tree_ids: list[str] = []
+        self._ai_tree_lock = asyncio.Lock()  # AI 树种查询缓存锁
 
         # Forest 房间密钥正则表达式
         self.key_pattern = re.compile(r"输入我的房间密钥：([A-Z0-9]+)，和我一起")
 
         logger.info(f"Forest 房间密钥提取插件已加载，启用状态: {self.enabled}")
+
+    def _get_config(self, key: str, default):
+        """
+        安全获取配置值，确保 None 时返回默认值
+
+        Args:
+            key: 配置键名
+            default: 默认值
+
+        Returns:
+            配置值（如果为 None 则返回默认值）
+        """
+        value = self.config.get(key)
+        return value if value is not None else default
+
+    def _validate_fixed_reply_rules(self, rules: list) -> list:
+        """
+        验证并过滤无效的固定回复规则
+
+        Args:
+            rules: 原始规则列表
+
+        Returns:
+            有效的规则列表
+        """
+        valid_rules = []
+        for i, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                logger.warning(f"固定回复规则 {i} 不是字典类型，已跳过")
+                continue
+            trigger_words = rule.get("trigger_words")
+            reply = rule.get("reply")
+            if not isinstance(trigger_words, list) or not trigger_words:
+                logger.warning(f"固定回复规则 {i} 缺少有效的 trigger_words，已跳过")
+                continue
+            if not isinstance(reply, str) or not reply:
+                logger.warning(f"固定回复规则 {i} 缺少有效的 reply，已跳过")
+                continue
+            # 过滤空的触发词
+            trigger_words = [t for t in trigger_words if t and isinstance(t, str)]
+            if trigger_words:
+                valid_rules.append({
+                    "trigger_words": trigger_words,
+                    "reply": reply
+                })
+        return valid_rules
+
+    def _init_configs(self):
+        """初始化所有配置项"""
+        # === 基础配置 ===
+        self.enabled = self._get_config("enabled", True)
+        self.reply_format = self._get_config("reply_format", "{key}")
+        self.whitelist = self._get_config("whitelist", [])
+        self.blacklist = self._get_config("blacklist", [])
+
+        # === 限流配置 ===
+        self.rate_limit_enabled = self._get_config("rate_limit_enabled", True)
+        self.rate_limit_window = self._get_config("rate_limit_window", 60)
+        self.rate_limit_count = self._get_config("rate_limit_count", 10)
+        self.group_timestamps: defaultdict[str, deque] = defaultdict(deque)
+        self._rate_limit_lock = asyncio.Lock()  # 限流数据锁
+
+        # === 通知配置 ===
+        # 早安通知
+        self.morning_notify_enabled = self._get_config("morning_notify_enabled", True)
+        self.morning_notify_time = self._get_config("morning_notify_time", "07:00")
+        self.morning_notify_days = self._get_config("morning_notify_days", [1, 2, 3, 4, 5, 6, 0])
+        self.morning_notify_text = self._get_config("morning_notify_text", "早上好！新的一天开始了，快来打卡种树吧！")
+
+        # 晚安通知
+        self.night_notify_enabled = self._get_config("night_notify_enabled", True)
+        self.night_notify_time = self._get_config("night_notify_time", "22:00")
+        self.night_notify_days = self._get_config("night_notify_days", [0, 1, 2, 3, 4, 5, 6])
+        self.night_notify_text = self._get_config("night_notify_text", "夜深了，该休息啦，晚安！明天继续种树~")
+
+        # 周统计
+        self.weekstat_enabled = self._get_config("weekstat_enabled", True)
+        self.weekstat_day = self._get_config("weekstat_day", 1)
+        self.weekstat_time = self._get_config("weekstat_time", "07:00")
+        self.rank_top_n = self._get_config("rank_top_n", 5)
+
+        # 学习目标
+        self.topic_notify_enabled = self._get_config("topic_notify_enabled", True)
+        self.topic_notify_day = self._get_config("topic_notify_day", 1)
+        self.topic_notify_time = self._get_config("topic_notify_time", "08:00")
+
+        # === 关键词唤起配置 ===
+        self.keyword_reply_enabled = self._get_config("keyword_reply_enabled", True)
+        self.keywords = self._get_config("keywords", ["果果"])
+        # 过滤空字符串关键词，避免匹配任意内容
+        self.keywords = [kw for kw in self.keywords if kw and kw.strip()]
+        if self.keywords:
+            pattern = "|".join(re.escape(kw) for kw in self.keywords)
+            self.keyword_pattern = re.compile(f"({pattern})")
+        else:
+            self.keyword_pattern = None
+
+        # 关键词独立限流
+        self.keyword_rate_limit_enabled = self._get_config("keyword_rate_limit_enabled", True)
+        self.keyword_rate_limit_window = self._get_config("keyword_rate_limit_window", 60)
+        self.keyword_rate_limit_count = self._get_config("keyword_rate_limit_count", 5)
+        self.keyword_timestamps: defaultdict[str, deque] = defaultdict(deque)
+        self._keyword_rate_limit_lock = asyncio.Lock()  # 关键词限流数据锁
+
+        # === 固定回复配置 ===
+        self.fixed_reply_enabled = self._get_config("fixed_reply_enabled", True)
+        self.fixed_reply_rules = self._validate_fixed_reply_rules(
+            self._get_config("fixed_reply_rules", [])
+        )
+
+        # === 树种推送配置 ===
+        self.tree_notify_enabled = self._get_config("tree_notify_enabled", True)
+
+        # === 早安晚安自动回复配置 ===
+        self.greeting_reply_enabled = self._get_config("greeting_reply_enabled", True)
+        self.morning_greeting_start = self._get_config("morning_greeting_start", "06:00")
+        self.morning_greeting_end = self._get_config("morning_greeting_end", "10:00")
+        self.morning_greeting_replies = self._get_config("morning_greeting_replies", [])
+        self.night_greeting_start = self._get_config("night_greeting_start", "21:00")
+        self.night_greeting_end = self._get_config("night_greeting_end", "02:00")
+        self.night_greeting_replies = self._get_config("night_greeting_replies", [])
+
+        # === 晚安车报名配置 ===
+        self.night_bus_enabled = self._get_config("night_bus_enabled", True)
+        self.night_bus_start = self._get_config("night_bus_start", "18:00")
+        self.night_bus_end = self._get_config("night_bus_end", "00:00")
 
     async def initialize(self) -> None:
         """插件激活时启动定时任务"""
@@ -220,8 +277,10 @@ class ForestRoomPlugin(Star):
                     if description:
                         message += description
 
-                    self._today_tree_message = message
-                    self._today_tree_id = tree_id
+                    # 使用锁保护缓存写入
+                    async with self._tree_cache_lock:
+                        self._today_tree_message = message
+                        self._today_tree_id = tree_id
                     logger.info(f"已恢复今日树种: {zh_name} (ID: {tree_id})")
         except Exception as e:
             logger.error(f"恢复今日树种失败: {e}")
@@ -415,9 +474,10 @@ class ForestRoomPlugin(Star):
         if description:
             message += description
 
-        # 保存今日树种信息供查询
-        self._today_tree_message = message
-        self._today_tree_id = tree_id
+        # 保存今日树种信息供查询（使用锁保护）
+        async with self._tree_cache_lock:
+            self._today_tree_message = message
+            self._today_tree_id = tree_id
 
         logger.info(f"今日推送树种: {zh_name} (ID: {tree_id})")
         return message, tree_id
@@ -491,41 +551,43 @@ class ForestRoomPlugin(Star):
             self.db.mark_topic_pushed(topic_id)
             logger.info(f"已推送学习主题: {content}")
 
-    def _check_rate_limit(self, group_id: str) -> bool:
+    async def _check_rate_limit(self, group_id: str) -> bool:
         """检查是否触发限流，返回 True 表示允许响应"""
         if not self.rate_limit_enabled:
             return True
 
-        now = time.time()
-        timestamps = self.group_timestamps[group_id]
+        async with self._rate_limit_lock:
+            now = time.time()
+            timestamps = self.group_timestamps[group_id]
 
-        while timestamps and timestamps[0] < now - self.rate_limit_window:
-            timestamps.popleft()
+            while timestamps and timestamps[0] < now - self.rate_limit_window:
+                timestamps.popleft()
 
-        if len(timestamps) >= self.rate_limit_count:
-            logger.debug(f"群 {group_id} 触发限流，当前计数: {len(timestamps)}")
-            return False
+            if len(timestamps) >= self.rate_limit_count:
+                logger.debug(f"群 {group_id} 触发限流，当前计数: {len(timestamps)}")
+                return False
 
-        timestamps.append(now)
-        return True
+            timestamps.append(now)
+            return True
 
-    def _check_keyword_rate_limit(self, group_id: str) -> bool:
+    async def _check_keyword_rate_limit(self, group_id: str) -> bool:
         """检查关键词是否触发限流，返回 True 表示允许响应"""
         if not self.keyword_rate_limit_enabled:
             return True
 
-        now = time.time()
-        timestamps = self.keyword_timestamps[group_id]
+        async with self._keyword_rate_limit_lock:
+            now = time.time()
+            timestamps = self.keyword_timestamps[group_id]
 
-        while timestamps and timestamps[0] < now - self.keyword_rate_limit_window:
-            timestamps.popleft()
+            while timestamps and timestamps[0] < now - self.keyword_rate_limit_window:
+                timestamps.popleft()
 
-        if len(timestamps) >= self.keyword_rate_limit_count:
-            logger.debug(f"群 {group_id} 关键词触发限流，当前计数: {len(timestamps)}")
-            return False
+            if len(timestamps) >= self.keyword_rate_limit_count:
+                logger.debug(f"群 {group_id} 关键词触发限流，当前计数: {len(timestamps)}")
+                return False
 
-        timestamps.append(now)
-        return True
+            timestamps.append(now)
+            return True
 
     def _parse_time(self, time_str: str) -> int:
         """
@@ -639,10 +701,11 @@ class ForestRoomPlugin(Star):
             if not results:
                 return f"未找到包含「{name}」的树种"
 
-            # 记录查询到的树种 ID（用于后续发送图片）
-            for tree_id, _ in results[:3]:  # 最多记录3个
-                if tree_id not in self._ai_queried_tree_ids:
-                    self._ai_queried_tree_ids.append(tree_id)
+            # 记录查询到的树种 ID（用于后续发送图片，使用锁保护）
+            async with self._ai_tree_lock:
+                for tree_id, _ in results[:3]:  # 最多记录3个
+                    if tree_id not in self._ai_queried_tree_ids:
+                        self._ai_queried_tree_ids.append(tree_id)
 
             lines = [f"找到 {len(results)} 个匹配的树种："]
             for tree_id, info in results[:5]:
@@ -660,9 +723,10 @@ class ForestRoomPlugin(Star):
             if not tree_info:
                 return f"未找到 ID 为 {tree_id} 的树种"
 
-            # 记录查询到的树种 ID
-            if tree_id not in self._ai_queried_tree_ids:
-                self._ai_queried_tree_ids.append(tree_id)
+            # 记录查询到的树种 ID（使用锁保护）
+            async with self._ai_tree_lock:
+                if tree_id not in self._ai_queried_tree_ids:
+                    self._ai_queried_tree_ids.append(tree_id)
 
             zh = tree_info.get("zh", "未知")
             en = tree_info.get("en", "未知")
@@ -704,9 +768,10 @@ class ForestRoomPlugin(Star):
 
             tree_id, info = random.choice(self.tree_manager.trees_list)
 
-            # 记录查询到的树种 ID
-            if tree_id not in self._ai_queried_tree_ids:
-                self._ai_queried_tree_ids.append(tree_id)
+            # 记录查询到的树种 ID（使用锁保护）
+            async with self._ai_tree_lock:
+                if tree_id not in self._ai_queried_tree_ids:
+                    self._ai_queried_tree_ids.append(tree_id)
 
             zh = info.get("zh", "")
             en = info.get("en", "")
@@ -885,7 +950,7 @@ class ForestRoomPlugin(Star):
             if group_id in self.blacklist:
                 logger.debug(f"群 {group_id} 在黑名单中，跳过")
                 return
-            if not self._check_rate_limit(group_id):
+            if not await self._check_rate_limit(group_id):
                 return
 
         logger.info(f"检测到 Forest 房间邀请，密钥: {room_key}, 群: {group_id or '私聊'}")
@@ -989,7 +1054,7 @@ class ForestRoomPlugin(Star):
             return
 
         # 限流检查
-        if not self._check_keyword_rate_limit(group_id):
+        if not await self._check_keyword_rate_limit(group_id):
             return
 
         logger.info(f"触发固定回复: {message_text}")
@@ -1021,7 +1086,7 @@ class ForestRoomPlugin(Star):
             return
 
         # 限流检查（复用关键词限流）
-        if not self._check_keyword_rate_limit(group_id):
+        if not await self._check_keyword_rate_limit(group_id):
             return
 
         current_time = datetime.now().strftime("%H:%M")
@@ -1105,14 +1170,15 @@ class ForestRoomPlugin(Star):
             return
 
         # 关键词独立限流检查
-        if not self._check_keyword_rate_limit(group_id):
+        if not await self._check_keyword_rate_limit(group_id):
             return
 
         # 获取用户信息
         user_id = event.get_sender_id()
 
-        # 清空 AI 树种查询缓存
-        self._ai_queried_tree_ids = []
+        # 清空 AI 树种查询缓存（使用锁保护）
+        async with self._ai_tree_lock:
+            self._ai_queried_tree_ids = []
 
         # 构建打卡查询工具集
         checkin_tools = self._build_checkin_tools(user_id, group_id)
@@ -1161,9 +1227,12 @@ class ForestRoomPlugin(Star):
             # 构建消息组件
             components = [Plain(response.completion_text)]
 
-            # 如果 AI 查询了树种，附加图片
-            if self._ai_queried_tree_ids:
-                for tree_id in self._ai_queried_tree_ids[:3]:  # 最多发送3张图片
+            # 如果 AI 查询了树种，附加图片（使用锁保护读取）
+            async with self._ai_tree_lock:
+                queried_ids = list(self._ai_queried_tree_ids[:3])  # 最多发送3张图片
+
+            if queried_ids:
+                for tree_id in queried_ids:
                     image_path = self.tree_manager.get_tree_image_path(tree_id)
                     if image_path and image_path.exists():
                         components.append(Image(file=str(image_path)))
@@ -1439,17 +1508,22 @@ class ForestRoomPlugin(Star):
     @filter.command("今日树种")
     async def today_tree(self, event: AstrMessageEvent):
         """获取今日推送的树种"""
-        if not self._today_tree_message:
+        # 使用锁保护缓存读取
+        async with self._tree_cache_lock:
+            today_message = self._today_tree_message
+            today_tree_id = self._today_tree_id
+
+        if not today_message:
             yield event.plain_result("今日还没有推送树种，请等待早安通知")
             return
 
         # 获取图片路径
         image_path = None
-        if self._today_tree_id:
-            image_path = self.tree_manager.get_tree_image_path(self._today_tree_id)
+        if today_tree_id:
+            image_path = self.tree_manager.get_tree_image_path(today_tree_id)
 
         # 构建消息链
-        components = [Plain(self._today_tree_message)]
+        components = [Plain(today_message)]
         if image_path and image_path.exists():
             components.append(Image(file=str(image_path)))
 
