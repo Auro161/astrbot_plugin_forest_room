@@ -49,6 +49,20 @@ class ForestDB:
                 pushed_at DATETIME NOT NULL
             )""")
 
+            # 晚安车报名表
+            conn.execute("""CREATE TABLE IF NOT EXISTS night_bus_signups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                user_name TEXT,
+                signup_time DATETIME NOT NULL,
+                signup_date TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, group_id, signup_date)
+            )""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_night_bus_lookup
+                ON night_bus_signups(group_id, signup_date)""")
+
             conn.commit()
 
     # === 打卡相关 ===
@@ -293,3 +307,107 @@ class ForestDB:
                 return cursor.fetchone()[0]
         except sqlite3.Error:
             return 0
+
+    # === 晚安车报名相关 ===
+
+    def signup_night_bus(self, user_id: str, group_id: str, user_name: str = None) -> bool:
+        """报名晚安车，返回是否成功（False 表示已报名）"""
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO night_bus_signups
+                       (user_id, group_id, user_name, signup_time, signup_date)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (user_id, group_id, user_name, now, today)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
+
+    def cancel_night_bus(self, user_id: str, group_id: str) -> bool:
+        """取消晚安车报名，返回是否成功"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """DELETE FROM night_bus_signups
+                       WHERE user_id = ? AND group_id = ? AND signup_date = ?""",
+                    (user_id, group_id, today)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
+
+    def get_night_bus_signups(self, group_id: str) -> List[Tuple[str, str]]:
+        """获取今日晚安车报名列表，返回 [(user_id, user_name)]"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """SELECT user_id, user_name FROM night_bus_signups
+                   WHERE group_id = ? AND signup_date = ?
+                   ORDER BY signup_time ASC""",
+                (group_id, today)
+            )
+            return cursor.fetchall()
+
+    def get_night_bus_count(self, group_id: str) -> int:
+        """获取今日晚安车报名人数"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """SELECT COUNT(*) FROM night_bus_signups
+                   WHERE group_id = ? AND signup_date = ?""",
+                (group_id, today)
+            )
+            return cursor.fetchone()[0]
+
+    def get_user_night_bus_count(self, user_id: str, group_id: str) -> int:
+        """获取用户累计参加晚安车次数"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """SELECT COUNT(DISTINCT signup_date) FROM night_bus_signups
+                   WHERE user_id = ? AND group_id = ?""",
+                (user_id, group_id)
+            )
+            return cursor.fetchone()[0]
+
+    def get_group_night_bus_stats(self, group_id: str, days: int = 7) -> dict:
+        """获取群晚安车统计（最近 N 天）"""
+        date_limit = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        with sqlite3.connect(self.db_path) as conn:
+            # 总发车次数（报名人数 > 2 的天数）
+            cursor = conn.execute(
+                """SELECT signup_date, COUNT(*) as cnt FROM night_bus_signups
+                   WHERE group_id = ? AND signup_date >= ?
+                   GROUP BY signup_date
+                   HAVING cnt > 2""",
+                (group_id, date_limit)
+            )
+            bus_days = cursor.fetchall()
+            # 总报名人次
+            cursor = conn.execute(
+                """SELECT COUNT(*) FROM night_bus_signups
+                   WHERE group_id = ? AND signup_date >= ?""",
+                (group_id, date_limit)
+            )
+            total_signups = cursor.fetchone()[0]
+            # 最活跃乘客
+            cursor = conn.execute(
+                """SELECT user_name, COUNT(*) as cnt FROM night_bus_signups
+                   WHERE group_id = ? AND signup_date >= ?
+                   GROUP BY user_id
+                   ORDER BY cnt DESC
+                   LIMIT 3""",
+                (group_id, date_limit)
+            )
+            top_passengers = cursor.fetchall()
+
+        return {
+            "bus_days": len(bus_days),
+            "total_signups": total_signups,
+            "top_passengers": [(name or "未知", cnt) for name, cnt in top_passengers]
+        }

@@ -263,5 +263,23 @@
         "items": {
             "type": "string"
         }
+    },
+    "night_bus_enabled": {
+        "description": "启用晚安车报名",
+        "type": "bool",
+        "hint": "是否启用晚安车报名功能",
+        "default": true
+    },
+    "night_bus_start": {
+        "description": "晚安车报名开始时间",
+        "type": "string",
+        "hint": "晚安车报名时间段的开始时间，如 18:00",
+        "default": "18:00"
+    },
+    "night_bus_end": {
+        "description": "晚安车报名结束时间",
+        "type": "string",
+        "hint": "晚安车报名时间段的结束时间，如 00:00",
+        "default": "00:00"
     }
 }

@@ -156,6 +156,11 @@ class ForestRoomPlugin(Star):
         self.night_greeting_end = self.config.get("night_greeting_end", "02:00")
         self.night_greeting_replies = self.config.get("night_greeting_replies", [])
 
+        # === 晚安车报名配置 ===
+        self.night_bus_enabled = self.config.get("night_bus_enabled", True)
+        self.night_bus_start = self.config.get("night_bus_start", "18:00")
+        self.night_bus_end = self.config.get("night_bus_end", "00:00")
+
         # === 数据库初始化 ===
         data_dir = StarTools.get_data_dir()
         db_path = data_dir / "forest.db"
@@ -382,9 +387,32 @@ class ForestRoomPlugin(Star):
         return message, tree_id
 
     async def _send_night_notify(self):
-        """发送晚安通知"""
+        """发送晚安通知（附带晚安车报名人员）"""
         logger.info("发送晚安通知")
-        await self._send_to_whitelist_groups(self.night_notify_text)
+
+        if not self.whitelist:
+            logger.debug("白名单为空，跳过推送")
+            return
+
+        if not self._platform_id:
+            logger.warning("平台 ID 未初始化，跳过推送")
+            return
+
+        for group_id in self.whitelist:
+            # 构建消息
+            message = self.night_notify_text
+
+            # 检查晚安车报名人数
+            signups = self.db.get_night_bus_signups(group_id)
+            if len(signups) > 2:
+                names = [name or uid for uid, name in signups]
+                message += f"\n\n🚌 晚安车等待发车，请司机和各位乘客准备！今日乘客 {len(signups)} 人："
+                message += "\n" + "、".join(names)
+
+            try:
+                await self._send_group_message(group_id, message)
+            except Exception as e:
+                logger.error(f"发送消息到群 {group_id} 失败: {e}")
 
     async def _send_weekstat(self):
         """发送周统计排行"""
@@ -892,6 +920,79 @@ class ForestRoomPlugin(Star):
         if reply:
             yield event.plain_result(reply)
 
+    # === 晚安车报名 ===
+
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def on_night_bus_message(self, event: AstrMessageEvent):
+        """监听群消息，处理晚安车报名"""
+        if not self._platform_id:
+            self._platform_id = event.get_platform_id()
+
+        if not self.enabled or not self.night_bus_enabled:
+            return
+
+        # 只响应 @机器人
+        if not event.is_at_or_wake_command:
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+
+        # 白名单/黑名单检查
+        if self.whitelist and group_id not in self.whitelist:
+            return
+        if group_id in self.blacklist:
+            return
+
+        # 时间段检查（18:00-24:00）
+        current_time = datetime.now().strftime("%H:%M")
+        if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
+            yield event.plain_result("⚠️ 晚安车报名时间为 18:00-24:00，当前不在报名时间内")
+            return
+
+        message_text = event.message_str.strip()
+        user_id = event.get_sender_id()
+        user_name = event.get_sender_name() or user_id
+
+        reply = None
+
+        # 检测报名意图
+        if "晚安车报名" in message_text and "取消" not in message_text and "查询" not in message_text and "有哪些" not in message_text and "人数" not in message_text:
+            success = self.db.signup_night_bus(user_id, group_id, user_name)
+            if success:
+                count = self.db.get_night_bus_count(group_id)
+                reply = f"✅ {user_name} 报名成功！当前已报名 {count} 人"
+            else:
+                reply = f"⚠️ {user_name} 今日已报名，无需重复报名"
+
+        # 检测查询意图
+        elif "晚安车报名" in message_text and ("查询" in message_text or "有哪些" in message_text or "人数" in message_text):
+            signups = self.db.get_night_bus_signups(group_id)
+            if signups:
+                names = [name or uid for uid, name in signups]
+                reply = f"🚌 今日晚安车已报名 {len(signups)} 人：\n" + "\n".join(f"  {i+1}. {name}" for i, name in enumerate(names))
+            else:
+                reply = "🚌 今日暂无人报名晚安车"
+
+        # 检测取消意图
+        elif "取消" in message_text and "晚安车报名" in message_text:
+            success = self.db.cancel_night_bus(user_id, group_id)
+            if success:
+                count = self.db.get_night_bus_count(group_id)
+                reply = f"❌ {user_name} 已取消报名，当前剩余 {count} 人"
+            else:
+                reply = f"⚠️ {user_name} 今日尚未报名"
+
+        # 检测个人统计意图
+        elif "晚安车" in message_text and ("我" in message_text or "几次" in message_text or "参加" in message_text):
+            count = self.db.get_user_night_bus_count(user_id, group_id)
+            reply = f"🚌 {user_name} 累计参加晚安车 {count} 次"
+
+        if reply:
+            yield event.plain_result(reply)
+
     # === 关键词唤起 AI 回复 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -1120,6 +1221,48 @@ class ForestRoomPlugin(Star):
         self.config["greeting_reply_enabled"] = False
         self.config.save_config()
         yield event.plain_result("❌ 早安晚安自动回复已关闭")
+
+    # === 晚安车报名管理命令 ===
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest晚安车开启")
+    async def enable_night_bus(self, event: AstrMessageEvent):
+        """开启晚安车报名"""
+        self.night_bus_enabled = True
+        self.config["night_bus_enabled"] = True
+        self.config.save_config()
+        yield event.plain_result("✅ 晚安车报名已开启")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest晚安车关闭")
+    async def disable_night_bus(self, event: AstrMessageEvent):
+        """关闭晚安车报名"""
+        self.night_bus_enabled = False
+        self.config["night_bus_enabled"] = False
+        self.config.save_config()
+        yield event.plain_result("❌ 晚安车报名已关闭")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest晚安车统计")
+    async def night_bus_stats(self, event: AstrMessageEvent):
+        """查看晚安车统计（管理员）"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("⚠️ 只能在群聊中使用此命令")
+            return
+
+        stats = self.db.get_group_night_bus_stats(group_id, days=7)
+
+        msg = f"🚌 本周晚安车统计：\n"
+        msg += f"  发车次数：{stats['bus_days']} 次\n"
+        msg += f"  报名人次：{stats['total_signups']} 人次\n"
+
+        if stats['top_passengers']:
+            msg += f"  活跃乘客："
+            names = [f"{name}({cnt}次)" for name, cnt in stats['top_passengers']]
+            msg += "、".join(names)
+
+        yield event.plain_result(msg)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest统计开启")
