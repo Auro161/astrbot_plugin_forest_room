@@ -72,10 +72,19 @@ class TreeManager:
         if not tree_info:
             return None
 
-        en_name = tree_info.get("en", "").replace("/", "_")
-        zh_name = tree_info.get("zh", "").replace("/", "_")
-        image_name = f"{tree_id}_{en_name}_{zh_name}.webp"
+        # 安全处理文件名，防止路径遍历攻击
+        en_name = re.sub(r'[^\w\-]', '_', tree_info.get("en", ""))
+        zh_name = re.sub(r'[^\w\-]', '_', tree_info.get("zh", ""))
+        safe_tree_id = re.sub(r'[^\w\-]', '_', tree_id)
+        image_name = f"{safe_tree_id}_{en_name}_{zh_name}.webp"
         image_path = self.plugin_dir / "tree" / "mature_trees" / image_name
+
+        # 额外检查：确保路径在预期目录内
+        try:
+            image_path.resolve().relative_to(self.plugin_dir.resolve())
+        except ValueError:
+            logger.warning(f"检测到非法路径访问: {image_name}")
+            return None
 
         if image_path.exists():
             return image_path
@@ -110,6 +119,7 @@ class ForestRoomPlugin(Star):
         self._today_tree_message: str | None = None
         self._today_tree_id: str | None = None
         self._tree_cache_lock = asyncio.Lock()  # 树种缓存锁
+        self._tree_push_lock = asyncio.Lock()  # 树种推送操作锁
 
         # === AI 树种查询缓存 ===
         self._ai_queried_tree_ids: list[str] = []
@@ -158,12 +168,17 @@ class ForestRoomPlugin(Star):
                 logger.warning(f"固定回复规则 {i} 缺少有效的 reply，已跳过")
                 continue
             # 过滤空的触发词
+            original_count = len(trigger_words)
             trigger_words = [t for t in trigger_words if t and isinstance(t, str)]
-            if trigger_words:
-                valid_rules.append({
-                    "trigger_words": trigger_words,
-                    "reply": reply
-                })
+            if len(trigger_words) < original_count:
+                logger.debug(f"固定回复规则 {i} 过滤了 {original_count - len(trigger_words)} 个无效触发词")
+            if not trigger_words:
+                logger.warning(f"固定回复规则 {i} 过滤后无有效触发词，已跳过")
+                continue
+            valid_rules.append({
+                "trigger_words": trigger_words,
+                "reply": reply
+            })
         return valid_rules
 
     def _init_configs(self):
@@ -435,52 +450,53 @@ class ForestRoomPlugin(Star):
 
     async def _get_daily_tree_message(self) -> tuple[str, str] | tuple[None, None]:
         """获取今日推送的树种信息，返回 (消息, 树种ID)"""
-        all_tree_ids = self.tree_manager.get_all_tree_ids()
-        if not all_tree_ids:
-            return None, None
-
-        pushed_ids = self.db.get_pushed_tree_ids()
-        unpushed_ids = [tid for tid in all_tree_ids if tid not in pushed_ids]
-
-        # 如果全部推送完，重置
-        if not unpushed_ids:
-            logger.info("所有树种已推送完毕，重新循环")
-            if not self.db.reset_all_trees():
-                logger.error("重置树种推送状态失败")
+        # 使用锁保护整个推送过程，防止竞态条件
+        async with self._tree_push_lock:
+            all_tree_ids = self.tree_manager.get_all_tree_ids()
+            if not all_tree_ids:
                 return None, None
-            unpushed_ids = all_tree_ids
 
-        # 随机选择一个未推送的树种
-        tree_id = random.choice(unpushed_ids)
-        tree_info = self.tree_manager.get_tree_info(tree_id)
+            pushed_ids = self.db.get_pushed_tree_ids()
+            unpushed_ids = [tid for tid in all_tree_ids if tid not in pushed_ids]
 
-        if not tree_info:
-            return None, None
+            # 如果全部推送完，重置
+            if not unpushed_ids:
+                logger.info("所有树种已推送完毕，重新循环")
+                if not self.db.reset_all_trees():
+                    logger.error("重置树种推送状态失败")
+                    return None, None
+                unpushed_ids = all_tree_ids
 
-        # 标记已推送
-        self.db.mark_tree_pushed(tree_id)
+            # 随机选择一个未推送的树种
+            tree_id = random.choice(unpushed_ids)
+            tree_info = self.tree_manager.get_tree_info(tree_id)
 
-        # 构建消息
-        zh_name = tree_info.get("zh", "未知树种")
-        en_name = tree_info.get("en", "")
-        tier = tree_info.get("tier", "")
-        description = tree_info.get("description", "")
+            if not tree_info:
+                return None, None
 
-        message = f"今日树种：{zh_name}\n"
-        if en_name:
-            message += f"英文名：{en_name}\n"
-        if tier:
-            message += f"稀有度：{tier}\n"
-        if description:
-            message += description
+            # 标记已推送
+            self.db.mark_tree_pushed(tree_id)
 
-        # 保存今日树种信息供查询（使用锁保护）
-        async with self._tree_cache_lock:
+            # 构建消息
+            zh_name = tree_info.get("zh", "未知树种")
+            en_name = tree_info.get("en", "")
+            tier = tree_info.get("tier", "")
+            description = tree_info.get("description", "")
+
+            message = f"今日树种：{zh_name}\n"
+            if en_name:
+                message += f"英文名：{en_name}\n"
+            if tier:
+                message += f"稀有度：{tier}\n"
+            if description:
+                message += description
+
+            # 保存今日树种信息供查询（在同一个锁内操作）
             self._today_tree_message = message
             self._today_tree_id = tree_id
 
-        logger.info(f"今日推送树种: {zh_name} (ID: {tree_id})")
-        return message, tree_id
+            logger.info(f"今日推送树种: {zh_name} (ID: {tree_id})")
+            return message, tree_id
 
     async def _send_night_notify(self):
         """发送晚安通知（附带晚安车报名人员）"""
@@ -859,7 +875,7 @@ class ForestRoomPlugin(Star):
             if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
                 return f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
             
-            user_name = "用户"  # AI 上下文中没有用户名，使用默认值
+            user_name = f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}"
             success = self.db.signup_night_bus(user_id, group_id, user_name)
             if success:
                 count = self.db.get_night_bus_count(group_id)
@@ -959,12 +975,14 @@ class ForestRoomPlugin(Star):
 
     # === 基础命令 ===
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest开启")
     async def enable_forest(self, event: AstrMessageEvent):
         """开启 Forest 密钥提取功能"""
         self.enabled = True
         yield event.plain_result("✅ Forest 房间密钥提取功能已开启")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest关闭")
     async def disable_forest(self, event: AstrMessageEvent):
         """关闭 Forest 密钥提取功能"""
