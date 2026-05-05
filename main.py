@@ -754,6 +754,77 @@ class ForestRoomPlugin(Star):
         ])
         return tools
 
+    def _build_night_bus_tools(self, user_id: str, group_id: str) -> ToolSet:
+        """构建晚安车工具集"""
+
+        async def signup_night_bus(context, **kwargs) -> str:
+            """报名晚安车"""
+            # 检查时间段
+            current_time = datetime.now().strftime("%H:%M")
+            if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
+                return "⚠️ 晚安车报名时间为 18:00-24:00，当前不在报名时间内"
+            
+            user_name = "用户"  # AI 上下文中没有用户名，使用默认值
+            success = self.db.signup_night_bus(user_id, group_id, user_name)
+            if success:
+                count = self.db.get_night_bus_count(group_id)
+                return f"✅ 报名成功！当前已报名 {count} 人"
+            else:
+                return "⚠️ 今日已报名，无需重复报名"
+
+        async def cancel_night_bus(context, **kwargs) -> str:
+            """取消晚安车报名"""
+            success = self.db.cancel_night_bus(user_id, group_id)
+            if success:
+                count = self.db.get_night_bus_count(group_id)
+                return f"❌ 已取消报名，当前剩余 {count} 人"
+            else:
+                return "⚠️ 今日尚未报名"
+
+        async def query_night_bus_signups(context, **kwargs) -> str:
+            """查询今日晚安车报名名单"""
+            signups = self.db.get_night_bus_signups(group_id)
+            if signups:
+                names = [name or uid for uid, name in signups]
+                lines = [f"🚌 今日晚安车已报名 {len(signups)} 人："]
+                lines.extend([f"  {i+1}. {name}" for i, name in enumerate(names)])
+                return "\n".join(lines)
+            else:
+                return "🚌 今日暂无人报名晚安车"
+
+        async def get_user_night_bus_count(context, **kwargs) -> str:
+            """查询个人累计参加晚安车次数"""
+            count = self.db.get_user_night_bus_count(user_id, group_id)
+            return f"🚌 累计参加晚安车 {count} 次"
+
+        tools = ToolSet([
+            FunctionTool(
+                name="signup_night_bus",
+                parameters={"type": "object", "properties": {}},
+                description="报名参加晚安车",
+                handler=signup_night_bus,
+            ),
+            FunctionTool(
+                name="cancel_night_bus",
+                parameters={"type": "object", "properties": {}},
+                description="取消晚安车报名",
+                handler=cancel_night_bus,
+            ),
+            FunctionTool(
+                name="query_night_bus_signups",
+                parameters={"type": "object", "properties": {}},
+                description="查询今日晚安车报名名单和人数",
+                handler=query_night_bus_signups,
+            ),
+            FunctionTool(
+                name="get_user_night_bus_count",
+                parameters={"type": "object", "properties": {}},
+                description="查询用户累计参加晚安车的次数",
+                handler=get_user_night_bus_count,
+            ),
+        ])
+        return tools
+
     # === 消息处理 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -945,90 +1016,12 @@ class ForestRoomPlugin(Star):
             "安安", "好梦", "早点睡"  # 其他相关词
         ]
         if any(kw in message_text for kw in night_keywords):
-            if self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
+            # 如果消息包含"晚安车"，不触发晚安问候，让其他监听器处理
+            if "晚安车" in message_text:
+                pass
+            elif self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
                 reply = random.choice(self.night_greeting_replies)
                 logger.info(f"检测到晚安关键词: {message_text}")
-
-        if reply:
-            yield event.plain_result(reply)
-
-    # === 晚安车报名 ===
-
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
-    async def on_night_bus_message(self, event: AstrMessageEvent):
-        """监听群消息，处理晚安车报名"""
-        if not self._platform_id:
-            self._platform_id = event.get_platform_id()
-
-        if not self.enabled or not self.night_bus_enabled:
-            return
-
-        # 跳过命令消息（检查是否是唤醒命令）
-        # 如果 is_wake_up 为 True，说明消息是命令，应该跳过
-        if hasattr(event, 'is_wake_up') and event.is_wake_up:
-            return
-
-        # 只响应 @机器人
-        if not event.is_at_or_wake_command:
-            return
-
-        group_id = event.get_group_id()
-        if not group_id:
-            return
-
-        # 白名单/黑名单检查
-        if self.whitelist and group_id not in self.whitelist:
-            return
-        if group_id in self.blacklist:
-            return
-
-        # 检查消息是否包含晚安车相关内容，如果不包含则跳过
-        if '晚安车' not in message_text:
-            return
-
-        # 时间段检查（18:00-24:00）
-        current_time = datetime.now().strftime("%H:%M")
-        if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
-            yield event.plain_result("⚠️ 晚安车报名时间为 18:00-24:00，当前不在报名时间内")
-            return
-
-        user_id = event.get_sender_id()
-        user_name = event.get_sender_name() or user_id
-
-        reply = None
-
-        # 检测报名意图
-        if "晚安车报名" in message_text and "取消" not in message_text and "查询" not in message_text and "有哪些" not in message_text and "人数" not in message_text:
-            success = self.db.signup_night_bus(user_id, group_id, user_name)
-            if success:
-                count = self.db.get_night_bus_count(group_id)
-                reply = f"✅ {user_name} 报名成功！当前已报名 {count} 人"
-            else:
-                reply = f"⚠️ {user_name} 今日已报名，无需重复报名"
-
-        # 检测查询意图
-        elif "晚安车报名" in message_text and ("查询" in message_text or "有哪些" in message_text or "人数" in message_text):
-            signups = self.db.get_night_bus_signups(group_id)
-            if signups:
-                names = [name or uid for uid, name in signups]
-                reply = f"🚌 今日晚安车已报名 {len(signups)} 人：\n" + "\n".join(f"  {i+1}. {name}" for i, name in enumerate(names))
-            else:
-                reply = "🚌 今日暂无人报名晚安车"
-
-        # 检测取消意图
-        elif "取消" in message_text and "晚安车报名" in message_text:
-            success = self.db.cancel_night_bus(user_id, group_id)
-            if success:
-                count = self.db.get_night_bus_count(group_id)
-                reply = f"❌ {user_name} 已取消报名，当前剩余 {count} 人"
-            else:
-                reply = f"⚠️ {user_name} 今日尚未报名"
-
-        # 检测个人统计意图
-        elif "晚安车" in message_text and ("我" in message_text or "几次" in message_text or "参加" in message_text):
-            count = self.db.get_user_night_bus_count(user_id, group_id)
-            reply = f"🚌 {user_name} 累计参加晚安车 {count} 次"
 
         if reply:
             yield event.plain_result(reply)
@@ -1089,13 +1082,28 @@ class ForestRoomPlugin(Star):
         # 构建树种查询工具集
         tree_tools = self._build_tree_tools()
 
+        # 构建晚安车工具集
+        night_bus_tools = self._build_night_bus_tools(user_id, group_id)
+
         # 合并工具集
-        all_tools = ToolSet(list(checkin_tools.tools) + list(tree_tools.tools))
+        all_tools = ToolSet(list(checkin_tools.tools) + list(tree_tools.tools) + list(night_bus_tools.tools))
 
         # 获取默认人设的系统提示词
         persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
         system_prompt = persona.get("prompt", "") if persona else ""
-        system_prompt += "\n\n你可以使用工具查询用户的打卡记录和 Forest 树种信息。当用户询问打卡或树种相关问题时，请调用相应的工具。"
+        system_prompt += """\n\n你可以使用工具查询用户的打卡记录、Forest 树种信息和晚安车报名情况。
+
+当用户询问打卡、树种或晚安车相关问题时，请调用相应的工具。
+
+重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。
+
+晚安车相关操作必须使用专门的晚安车工具（signup_night_bus、cancel_night_bus、query_night_bus_signups、get_user_night_bus_count），不要使用文件搜索工具处理晚安车相关的问题。
+
+晚安车相关操作包括：
+- 报名：用户说"报名晚安车"、"我要报名"、"报名"等
+- 取消：用户说"取消报名"、"取消晚安车报名"、"取消"等
+- 查询：用户说"晚安车有谁"、"晚安车名单"、"有多少人报名"、"有谁"等
+- 统计：用户说"我晚安车几次"、"我参加了几次"、"晚安车统计"等"""
 
         # 获取当前 chat provider
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
