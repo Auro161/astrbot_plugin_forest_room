@@ -190,7 +190,39 @@ class ForestRoomPlugin(Star):
     async def initialize(self) -> None:
         """插件激活时启动定时任务"""
         await self._start_schedule()
+        
+        # 恢复今日树种信息（从数据库）
+        await self._restore_today_tree()
+        
         logger.info("Forest 插件已初始化，定时任务已启动")
+
+    async def _restore_today_tree(self):
+        """从数据库恢复今日树种信息"""
+        try:
+            result = self.db.get_today_pushed_tree()
+            if result:
+                tree_id, pushed_at = result
+                tree_info = self.tree_manager.get_tree_info(tree_id)
+                if tree_info:
+                    # 构建消息
+                    zh_name = tree_info.get("zh", "未知树种")
+                    en_name = tree_info.get("en", "")
+                    tier = tree_info.get("tier", "")
+                    description = tree_info.get("description", "")
+
+                    message = f"今日树种：{zh_name}\n"
+                    if en_name:
+                        message += f"英文名：{en_name}\n"
+                    if tier:
+                        message += f"稀有度：{tier}\n"
+                    if description:
+                        message += description
+
+                    self._today_tree_message = message
+                    self._today_tree_id = tree_id
+                    logger.info(f"已恢复今日树种: {zh_name} (ID: {tree_id})")
+        except Exception as e:
+            logger.error(f"恢复今日树种失败: {e}")
 
     async def terminate(self) -> None:
         """插件禁用时停止定时任务"""
@@ -932,6 +964,11 @@ class ForestRoomPlugin(Star):
         if not self.enabled or not self.night_bus_enabled:
             return
 
+        # 跳过命令消息（检查是否是唤醒命令）
+        # 如果 is_wake_up 为 True，说明消息是命令，应该跳过
+        if hasattr(event, 'is_wake_up') and event.is_wake_up:
+            return
+
         # 只响应 @机器人
         if not event.is_at_or_wake_command:
             return
@@ -946,13 +983,16 @@ class ForestRoomPlugin(Star):
         if group_id in self.blacklist:
             return
 
+        # 检查消息是否包含晚安车相关内容，如果不包含则跳过
+        if '晚安车' not in message_text:
+            return
+
         # 时间段检查（18:00-24:00）
         current_time = datetime.now().strftime("%H:%M")
         if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
             yield event.plain_result("⚠️ 晚安车报名时间为 18:00-24:00，当前不在报名时间内")
             return
 
-        message_text = event.message_str.strip()
         user_id = event.get_sender_id()
         user_name = event.get_sender_name() or user_id
 
@@ -1007,8 +1047,15 @@ class ForestRoomPlugin(Star):
 
         message_text = event.message_str
 
-        # 检查是否触发：关键词 或 @机器人
+        # 检查是否触发关键词
         is_keyword_trigger = self.keyword_pattern and self.keyword_pattern.search(message_text)
+
+        # 如果没有触发关键词，检查是否是命令（跳过命令）
+        if not is_keyword_trigger:
+            if hasattr(event, 'is_wake_up') and event.is_wake_up:
+                return
+
+        # 检查是否触发 @机器人
         is_atme_trigger = event.is_at_or_wake_command
 
         if not is_keyword_trigger and not is_atme_trigger:
@@ -1094,6 +1141,56 @@ class ForestRoomPlugin(Star):
             return
 
         message_text = event.message_str.strip()
+
+        # 处理"随机树种"
+        if message_text == "随机树种":
+            if not self.tree_manager.trees_list:
+                await event.send(event.plain_result("树种数据未加载"))
+                return
+
+            # 随机选择一个树种
+            tree_id, tree_info = random.choice(self.tree_manager.trees_list)
+
+            # 构建消息
+            zh_name = tree_info.get("zh", "未知树种")
+            en_name = tree_info.get("en", "")
+            tier = tree_info.get("tier", "")
+            description = tree_info.get("description", "")
+
+            message = f"随机树种：{zh_name}\n"
+            if en_name:
+                message += f"英文名：{en_name}\n"
+            if tier:
+                message += f"稀有度：{tier}\n"
+            if description:
+                message += description
+
+            # 获取图片路径
+            image_path = self.tree_manager.get_tree_image_path(tree_id)
+
+            # 构建消息链
+            components = [Plain(message)]
+            if image_path and image_path.exists():
+                components.append(Image(file=str(image_path)))
+
+            await event.send(event.chain_result(components))
+            return
+
+        # 处理"我的打卡"
+        if message_text == "我的打卡":
+            group_id = event.get_group_id()
+            if not group_id:
+                return
+
+            if self.whitelist and group_id not in self.whitelist:
+                return
+
+            user_id = event.get_sender_id()
+            days = self.db.get_user_week_days(user_id, group_id)
+            await event.send(event.plain_result(f"📅 本周已打卡 {days} 天"))
+            return
+
+        # 处理"打卡"
         if message_text != "打卡":
             return
 
@@ -1120,51 +1217,6 @@ class ForestRoomPlugin(Star):
         logger.info(f"用户 {user_id} 在群 {group_id} 打卡成功，本周第 {days} 天")
 
         await event.send(event.plain_result(f"✅ 打卡成功！本周已打卡 {days} 天"))
-
-    @filter.command("打卡")
-    async def checkin(self, event: AstrMessageEvent):
-        """每日打卡（命令方式，需要前缀或@）"""
-        if not self._platform_id:
-            self._platform_id = event.get_platform_id()
-
-        group_id = event.get_group_id()
-        if not group_id:
-            yield event.plain_result("⚠️ 仅支持群聊打卡")
-            return
-
-        if self.whitelist and group_id not in self.whitelist:
-            yield event.plain_result("⚠️ 本群未开启打卡功能")
-            return
-
-        user_id = event.get_sender_id()
-        user_name = event.get_sender_name() or f"用户{user_id[-4:]}"
-
-        if self.db.has_checked_today(user_id, group_id):
-            days = self.db.get_user_week_days(user_id, group_id)
-            yield event.plain_result(f"⚠️ 今日已打卡，本周已打卡 {days} 天")
-            return
-
-        if not self.db.checkin(user_id, group_id, user_name):
-            yield event.plain_result("⚠️ 打卡失败，请稍后重试")
-            return
-
-        days = self.db.get_user_week_days(user_id, group_id)
-        logger.info(f"用户 {user_id} 在群 {group_id} 打卡成功，本周第 {days} 天")
-
-        yield event.plain_result(f"✅ 打卡成功！本周已打卡 {days} 天")
-
-    @filter.command("我的打卡")
-    async def my_checkin(self, event: AstrMessageEvent):
-        """查看我的打卡记录"""
-        group_id = event.get_group_id()
-        if not group_id:
-            yield event.plain_result("⚠️ 仅支持群聊查询")
-            return
-
-        user_id = event.get_sender_id()
-        days = self.db.get_user_week_days(user_id, group_id)
-
-        yield event.plain_result(f"📅 本周已打卡 {days} 天")
 
     # === 通知开关命令 ===
 

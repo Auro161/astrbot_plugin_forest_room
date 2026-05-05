@@ -308,6 +308,27 @@ class ForestDB:
         except sqlite3.Error:
             return 0
 
+    def get_today_pushed_tree(self) -> Optional[Tuple[str, str]]:
+        """
+        获取今天推送的树种
+        返回 (tree_id, pushed_at) 或 None
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT tree_id, pushed_at FROM pushed_trees 
+                       WHERE DATE(pushed_at) = ?
+                       ORDER BY pushed_at DESC
+                       LIMIT 1""",
+                    (today,)
+                )
+                result = cursor.fetchone()
+                return (result[0], result[1]) if result else None
+        except sqlite3.Error:
+            return None
+            return 0
+
     # === 晚安车报名相关 ===
 
     def signup_night_bus(self, user_id: str, group_id: str, user_name: str = None) -> bool:
