@@ -18,7 +18,7 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Plain, Image
+from astrbot.api.message_components import Plain, Image, At
 from astrbot.api import FunctionTool, ToolSet
 
 # 不要使用这样的from astrbot.core.agent.tool import FunctionTool, ToolSet，这个会报错，需要使用这样的from astrbot.api import FunctionTool, ToolSet
@@ -1349,7 +1349,7 @@ class ForestRoomPlugin(Star):
                 # 获取默认人设的系统提示词
                 persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
                 system_prompt = persona.get("prompt", "") if persona else ""
-                system_prompt += "\n\n你正在帮助用户了解 Forest 专注森林应用中的树种，请用友好、有趣的方式介绍。"
+                system_prompt += "\n\n你刚刚为用户随机抽取了一个 Forest 树种，请用友好、有趣的方式介绍这个树种。"
 
                 response = await self.context.tool_loop_agent(
                     event=event,
@@ -1360,7 +1360,8 @@ class ForestRoomPlugin(Star):
                 )
 
                 # 构建消息组件
-                components = [Plain(response.completion_text)]
+                user_id = event.get_sender_id()
+                components = [At(qq=user_id), Plain(response.completion_text)]
 
                 # 附加树种图片
                 image_path = self.tree_manager.get_tree_image_path(tree_id)
@@ -1380,7 +1381,8 @@ class ForestRoomPlugin(Star):
                     message += description
 
                 image_path = self.tree_manager.get_tree_image_path(tree_id)
-                components = [Plain(message)]
+                user_id = event.get_sender_id()
+                components = [At(qq=user_id), Plain(message)]
                 if image_path and image_path.exists():
                     components.append(Image(file=str(image_path)))
 
