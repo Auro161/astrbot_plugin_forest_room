@@ -73,9 +73,10 @@ class TreeManager:
             return None
 
         # 安全处理文件名，防止路径遍历攻击
-        en_name = re.sub(r'[^\w\-]', '_', tree_info.get("en", ""))
-        zh_name = re.sub(r'[^\w\-]', '_', tree_info.get("zh", ""))
-        safe_tree_id = re.sub(r'[^\w\-]', '_', tree_id)
+        # 只替换文件名中的非法字符和控制字符，保留空格
+        en_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', tree_info.get("en", ""))
+        zh_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', tree_info.get("zh", ""))
+        safe_tree_id = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', tree_id)
         image_name = f"{safe_tree_id}_{en_name}_{zh_name}.webp"
         image_path = self.plugin_dir / "tree" / "mature_trees" / image_name
 
