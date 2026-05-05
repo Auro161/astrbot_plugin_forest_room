@@ -1327,29 +1327,59 @@ class ForestRoomPlugin(Star):
             # 随机选择一个树种
             tree_id, tree_info = random.choice(self.tree_manager.trees_list)
 
-            # 构建消息
+            # 构建树种信息
             zh_name = tree_info.get("zh", "未知树种")
             en_name = tree_info.get("en", "")
             tier = tree_info.get("tier", "")
             description = tree_info.get("description", "")
 
-            message = f"随机树种：{zh_name}\n"
-            if en_name:
-                message += f"英文名：{en_name}\n"
-            if tier:
-                message += f"稀有度：{tier}\n"
-            if description:
-                message += description
+            prompt = f"""请为用户介绍一个随机的 Forest 树种：
 
-            # 获取图片路径
-            image_path = self.tree_manager.get_tree_image_path(tree_id)
+名称：{zh_name}
+英文名：{en_name}
+稀有度：{tier}
+描述：{description}
 
-            # 构建消息链
-            components = [Plain(message)]
-            if image_path and image_path.exists():
-                components.append(Image(file=str(image_path)))
+请用友好、有趣的方式向用户介绍这个树种。"""
 
-            await event.send(event.chain_result(components))
+            # 获取 AI 回复
+            try:
+                provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+                response = await self.context.tool_loop_agent(
+                    event=event,
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                    tools=ToolSet([]),
+                    system_prompt="你是一个友好的助手，帮助用户了解 Forest 专注森林应用中的各种树种。",
+                )
+
+                # 构建消息组件
+                components = [Plain(response.completion_text)]
+
+                # 附加树种图片
+                image_path = self.tree_manager.get_tree_image_path(tree_id)
+                if image_path and image_path.exists():
+                    components.append(Image(file=str(image_path)))
+
+                await event.send(event.chain_result(components))
+            except Exception as e:
+                logger.error(f"随机树种 AI 回复失败: {e}")
+                # 降级：返回固定格式
+                message = f"随机树种：{zh_name}\n"
+                if en_name:
+                    message += f"英文名：{en_name}\n"
+                if tier:
+                    message += f"稀有度：{tier}\n"
+                if description:
+                    message += description
+
+                image_path = self.tree_manager.get_tree_image_path(tree_id)
+                components = [Plain(message)]
+                if image_path and image_path.exists():
+                    components.append(Image(file=str(image_path)))
+
+                await event.send(event.chain_result(components))
+
             return
 
         # 处理"我的打卡"
