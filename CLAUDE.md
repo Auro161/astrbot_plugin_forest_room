@@ -6,6 +6,7 @@
 - Forest 专注森林房间密钥自动提取
 - 每日打卡系统与周统计
 - 定时通知（早安/晚安/周统计/学习目标）
+- 树种推送与查询系统
 - 关键词唤起 AI 智能回复
 - 关键词固定回复规则
 
@@ -25,7 +26,10 @@ astrbot_plugin_forest_room/
 ├── metadata.yaml        # 插件元数据
 ├── _conf_schema.json    # 配置项定义
 ├── README.md            # 用户文档
-└── CLAUDE.md            # 开发指南
+├── CLAUDE.md            # 开发指南
+└── tree/                # 树种数据目录
+    ├── tree_names.json  # 树种信息
+    └── mature_trees/    # 树种图片
 ```
 
 ## 核心模块
@@ -110,6 +114,41 @@ def _match_fixed_reply(self, message_text: str) -> str | None:
     return None
 ```
 
+### 6. 树种推送系统
+
+**数据文件**：
+- `tree/tree_names.json` - 树种信息（164 个）
+- `tree/mature_trees/` - 树种图片目录
+
+**TreeManager 类**：管理树种数据加载和查询
+```python
+class TreeManager:
+    def get_tree_info(tree_id)      # 获取单个树种
+    def get_all_tree_ids()          # 获取所有树种 ID
+    def search_trees(keyword)       # 按名称搜索
+    def get_tree_image_path(tree_id) # 获取图片路径
+```
+
+**推送逻辑**：
+- 数据库表 `pushed_trees` 记录已推送树种
+- 每次早安通知随机选择未推送树种
+- 遍历完所有树种后自动重置
+
+**AI 工具**：
+- `search_tree_by_name` - 按名称搜索树种
+- `get_tree_detail` - 获取树种详情
+- `list_trees_by_tier` - 按稀有度列出
+- `get_random_tree` - 随机推荐
+- `get_tree_stats` - 统计信息
+
+**图片发送**：
+```python
+components = [Plain(message)]
+if image_path and image_path.exists():
+    components.append(Image(file=str(image_path)))
+yield event.result(MessageChain(components))
+```
+
 ## 配置系统
 
 配置项定义在 `_conf_schema.json`，通过 AstrBot 管理面板配置。
@@ -144,8 +183,19 @@ async def admin_handler(self, event: AstrMessageEvent):
 
 - `on_message` - 处理房间密钥提取
 - `on_fixed_reply_message` - 处理固定回复（优先级高于 AI 回复）
-- `on_keyword_message` - 处理关键词 AI 回复
+- `on_keyword_message` - 处理关键词/@机器人 AI 回复（含树种查询）
 - `on_checkin_message` - 处理打卡
+
+### 树种数据更新
+
+新增树种只需：
+1. 在 `tree/tree_names.json` 添加新树种数据
+2. 在 `tree/mature_trees/` 添加对应图片（格式：`{ID}_{英文名}_{中文名}.webp`）
+3. 重启插件自动加载
+
+数据库会自动兼容：
+- 新增树种 ID 不在 `pushed_trees` 表中，自动参与推送队列
+- 使用 `forest重置树种` 命令可清空推送记录
 
 ### 限流机制
 
@@ -223,4 +273,33 @@ tools.append(FunctionTool(
 @filter.command("新命令")
 async def new_command(self, event: AstrMessageEvent, arg: str = None):
     yield event.plain_result("回复内容")
+```
+
+### 添加带图片的命令
+
+```python
+@filter.command("示例")
+async def example(self, event: AstrMessageEvent):
+    message = "消息内容"
+    image_path = Path("path/to/image.webp")
+
+    components = [Plain(message)]
+    if image_path and image_path.exists():
+        components.append(Image(file=str(image_path)))
+
+    yield event.result(MessageChain(components))
+```
+
+## 重要提醒
+
+### AstrBot API 导入路径
+
+**正确**：
+```python
+from astrbot.api import FunctionTool, ToolSet
+```
+
+**错误**（会报错）：
+```python
+from astrbot.core.agent.tool import FunctionTool, ToolSet
 ```

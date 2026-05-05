@@ -1,6 +1,6 @@
 # Forest 房间密钥提取插件
 
-一个用于 AstrBot 的多功能 Forest 专注森林辅助插件，支持房间密钥提取、每日打卡、定时通知、AI 智能回复等功能。
+一个用于 AstrBot 的多功能 Forest 专注森林辅助插件，支持房间密钥提取、每日打卡、定时通知、树种推送、AI 智能回复等功能。
 
 ## 功能特性
 
@@ -22,9 +22,16 @@
 - 周统计排行榜自动推送
 - 每周学习目标讨论推送
 
+### 🌲 树种推送系统
+- 早安通知自动附带每日树种介绍和图片
+- 164 个树种数据，随机推送，遍历完自动重置
+- 支持关键词或 @机器人 查询树种信息
+- AI 查询树种自动附带图片
+
 ### 🤖 AI 智能回复
 - 关键词唤起 AI 回复（如"果果"）
-- AI 可查询用户打卡记录（今日打卡、本周天数、缺卡日期）
+- 支持 @机器人 触发回复
+- AI 可查询用户打卡记录和树种信息
 - 独立的关键词限流配置
 
 ### 💬 固定回复规则
@@ -115,6 +122,12 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 | `fixed_reply_enabled` | bool | `true` | 是否启用固定回复 |
 | `fixed_reply_rules` | list | 见配置 | 固定回复规则列表 |
 
+### 树种推送配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `tree_notify_enabled` | bool | `true` | 是否在早安通知中附带树种介绍 |
+
 ## 命令列表
 
 ### 基础命令
@@ -155,6 +168,21 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 | `forest添加主题 <内容>` | 添加学习主题 |
 | `forest主题列表` | 查看所有学习主题 |
 | `forest删除主题 <ID>` | 删除指定主题 |
+
+### 树种功能
+
+| 命令 | 说明 |
+|------|------|
+| `/今日树种` | 查询今日推送的树种（含图片） |
+| `/随机树种` | 随机抽取一个树种介绍（含图片） |
+
+### 树种管理（管理员）
+
+| 命令 | 说明 |
+|------|------|
+| `forest树种状态` | 查看树种推送进度 |
+| `forest重置树种` | 重置树种推送状态 |
+| `forest搜索树种 <关键词>` | 搜索树种 |
 
 ## 使用示例
 
@@ -197,6 +225,28 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 机器人：Forest 官方下载链接：https://www.upwardsware.com/zh_CN/
 ```
 
+### 树种功能
+
+```
+用户：/今日树种
+机器人：今日树种：樱花
+英文名：Cherry Blossom
+稀有度：史诗
+「...梅花谢後樱花绽，浅浅匀红...」唉呀，茶凉了。
+[附带树种图片]
+
+用户：/随机树种
+机器人：银杏
+英文名：Ginkgo Tree
+稀有度：传说
+爷爷的爷爷当年种下的银杏树，如今枝叶繁茂，金黄一片，蔚为壮观。
+[附带树种图片]
+
+用户：@机器人 介绍一下樱花
+机器人：[AI 回复树种信息]
+[附带树种图片]
+```
+
 ## 技术要求
 
 - AstrBot >= 3.0.0
@@ -208,8 +258,20 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 插件使用 SQLite 数据库存储以下数据：
 - 用户打卡记录（`checkins` 表）
 - 学习主题（`topics` 表）
+- 树种推送记录（`pushed_trees` 表）
 
 数据库文件位置：`addons/data/astrbot_plugin_forest_room/forest.db`
+
+## 树种数据
+
+树种数据位于 `tree/` 目录：
+- `tree/tree_names.json` - 树种信息（中英文名、稀有度、描述）
+- `tree/mature_trees/` - 树种图片目录
+
+更新树种数据只需：
+1. 更新 `tree_names.json` 添加新树种
+2. 在 `mature_trees/` 添加对应图片
+3. 重启插件或重载即可
 
 ## 许可证
 
