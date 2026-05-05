@@ -1345,12 +1345,18 @@ class ForestRoomPlugin(Star):
             # 获取 AI 回复
             try:
                 provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+
+                # 获取默认人设的系统提示词
+                persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
+                system_prompt = persona.get("prompt", "") if persona else ""
+                system_prompt += "\n\n你正在帮助用户了解 Forest 专注森林应用中的树种，请用友好、有趣的方式介绍。"
+
                 response = await self.context.tool_loop_agent(
                     event=event,
                     chat_provider_id=provider_id,
                     prompt=prompt,
                     tools=ToolSet([]),
-                    system_prompt="你是一个友好的助手，帮助用户了解 Forest 专注森林应用中的各种树种。",
+                    system_prompt=system_prompt,
                 )
 
                 # 构建消息组件
