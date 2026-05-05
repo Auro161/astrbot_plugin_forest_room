@@ -229,7 +229,7 @@ class ForestDB:
                 conn.commit()
             return True
         except sqlite3.Error as e:
-            logger.error(f"查询打卡状态失败: {e}")
+            logger.error(f"标记主题推送状态失败: {e}")
             return False
 
     def reset_all_topics(self) -> bool:
@@ -240,7 +240,7 @@ class ForestDB:
                 conn.commit()
             return True
         except sqlite3.Error as e:
-            logger.error(f"查询打卡状态失败: {e}")
+            logger.error(f"重置主题状态失败: {e}")
             return False
 
     def list_topics(self) -> List[Tuple[int, str, Optional[str]]]:
@@ -268,7 +268,7 @@ class ForestDB:
                 conn.commit()
                 return cursor.rowcount > 0
         except sqlite3.Error as e:
-            logger.error(f"查询打卡状态失败: {e}")
+            logger.error(f"删除主题失败: {e}")
             return False
 
     def get_topic_count(self) -> int:
@@ -294,7 +294,7 @@ class ForestDB:
                 conn.commit()
             return True
         except sqlite3.Error as e:
-            logger.error(f"查询打卡状态失败: {e}")
+            logger.error(f"标记树种推送状态失败: {e}")
             return False
 
     def get_pushed_tree_ids(self) -> set:
@@ -314,7 +314,7 @@ class ForestDB:
                 conn.commit()
             return True
         except sqlite3.Error as e:
-            logger.error(f"查询打卡状态失败: {e}")
+            logger.error(f"重置树种推送状态失败: {e}")
             return False
 
     def get_pushed_tree_count(self) -> int:
@@ -363,7 +363,7 @@ class ForestDB:
                 conn.commit()
                 return cursor.rowcount > 0
         except sqlite3.Error as e:
-            logger.error(f"查询打卡状态失败: {e}")
+            logger.error(f"报名晚安车失败: {e}")
             return False
 
     def cancel_night_bus(self, user_id: str, group_id: str) -> bool:
@@ -379,7 +379,7 @@ class ForestDB:
                 conn.commit()
                 return cursor.rowcount > 0
         except sqlite3.Error as e:
-            logger.error(f"查询打卡状态失败: {e}")
+            logger.error(f"取消晚安车报名失败: {e}")
             return False
 
     def get_night_bus_signups(self, group_id: str) -> List[Tuple[str, str]]:

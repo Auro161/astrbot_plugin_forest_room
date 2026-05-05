@@ -501,9 +501,10 @@ class ForestRoomPlugin(Star):
             if description:
                 message += description
 
-            # 保存今日树种信息供查询（在同一个锁内操作）
-            self._today_tree_message = message
-            self._today_tree_id = tree_id
+            # 保存今日树种信息供查询（使用缓存锁保护）
+            async with self._tree_cache_lock:
+                self._today_tree_message = message
+                self._today_tree_id = tree_id
 
             logger.info(f"今日推送树种: {zh_name} (ID: {tree_id})")
             return message, tree_id
@@ -1157,14 +1158,13 @@ class ForestRoomPlugin(Star):
 
         # 早安关键词（按长度降序，优先匹配更长的关键词）
         morning_keywords = [
-            "早安呀", "早上好", "早早早", "早呀", "早哟", "早啊",  # 长词优先
-            "早安"  # 短词放后面，移除单独的"早"避免误触发
+            "早安呀", "早上好", "早早早", "早呀", "早哟", "早啊",
+            "早安"
         ]
-        # 晚安关键词（按长度降序）
+        # 晚安关键词（不含"晚安车"，该词由其他处理器处理）
         night_keywords = [
-            "晚安车",  # 特殊词，用于排除
-            "晚安呀", "晚安哟", "晚上好", "早点睡",  # 长词优先
-            "晚安", "晚啦", "睡啦", "好梦"  # 短词放后面，移除"安安"和"晚"避免误触发
+            "晚安呀", "晚安哟", "晚上好", "早点睡",
+            "晚安", "晚啦", "睡啦", "好梦"
         ]
 
         # 检测早安关键词（互斥检测）
@@ -1174,20 +1174,17 @@ class ForestRoomPlugin(Star):
                     if self.morning_greeting_replies:
                         reply = random.choice(self.morning_greeting_replies)
                         logger.info(f"检测到早安关键词: {kw}")
-                break  # 匹配成功后立即退出，避免重复匹配
+                break
 
-        # 检测晚安关键词（仅在早安未匹配时检测）
-        if reply is None:
+        # 检测晚安关键词（仅在早安未匹配且不含"晚安车"时检测）
+        if reply is None and "晚安车" not in message_text:
             for kw in night_keywords:
                 if kw in message_text:
-                    # 如果消息包含"晚安车"，不触发晚安问候
-                    if kw == "晚安车":
-                        break
                     if self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
                         if self.night_greeting_replies:
                             reply = random.choice(self.night_greeting_replies)
                             logger.info(f"检测到晚安关键词: {kw}")
-                    break  # 匹配成功后立即退出
+                    break
 
         if reply:
             yield event.plain_result(reply)
