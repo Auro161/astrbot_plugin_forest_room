@@ -199,26 +199,26 @@ class ForestRoomPlugin(Star):
         # === 通知配置 ===
         # 早安通知
         self.morning_notify_enabled = self._get_config("morning_notify_enabled", True)
-        self.morning_notify_time = self._get_config("morning_notify_time", "07:00")
+        self.morning_notify_time = self._validate_time_config("morning_notify_time", "07:00")
         self.morning_notify_days = self._get_config("morning_notify_days", [1, 2, 3, 4, 5, 6, 0])
         self.morning_notify_text = self._get_config("morning_notify_text", "早上好！新的一天开始了，快来打卡种树吧！")
 
         # 晚安通知
         self.night_notify_enabled = self._get_config("night_notify_enabled", True)
-        self.night_notify_time = self._get_config("night_notify_time", "22:00")
+        self.night_notify_time = self._validate_time_config("night_notify_time", "23:00")
         self.night_notify_days = self._get_config("night_notify_days", [0, 1, 2, 3, 4, 5, 6])
         self.night_notify_text = self._get_config("night_notify_text", "夜深了，该休息啦，晚安！明天继续种树~")
 
         # 周统计
         self.weekstat_enabled = self._get_config("weekstat_enabled", True)
         self.weekstat_day = self._get_config("weekstat_day", 1)
-        self.weekstat_time = self._get_config("weekstat_time", "07:00")
+        self.weekstat_time = self._validate_time_config("weekstat_time", "07:00")
         self.rank_top_n = self._get_config("rank_top_n", 5)
 
         # 学习目标
         self.topic_notify_enabled = self._get_config("topic_notify_enabled", True)
         self.topic_notify_day = self._get_config("topic_notify_day", 1)
-        self.topic_notify_time = self._get_config("topic_notify_time", "08:00")
+        self.topic_notify_time = self._validate_time_config("topic_notify_time", "08:00")
 
         # === 关键词唤起配置 ===
         self.keyword_reply_enabled = self._get_config("keyword_reply_enabled", True)
@@ -249,17 +249,21 @@ class ForestRoomPlugin(Star):
 
         # === 早安晚安自动回复配置 ===
         self.greeting_reply_enabled = self._get_config("greeting_reply_enabled", True)
-        self.morning_greeting_start = self._get_config("morning_greeting_start", "06:00")
-        self.morning_greeting_end = self._get_config("morning_greeting_end", "10:00")
+        self.morning_greeting_start = self._validate_time_config("morning_greeting_start", "06:00")
+        self.morning_greeting_end = self._validate_time_config("morning_greeting_end", "10:00")
         self.morning_greeting_replies = self._get_config("morning_greeting_replies", [])
-        self.night_greeting_start = self._get_config("night_greeting_start", "21:00")
-        self.night_greeting_end = self._get_config("night_greeting_end", "02:00")
+        self.night_greeting_start = self._validate_time_config("night_greeting_start", "21:00")
+        self.night_greeting_end = self._validate_time_config("night_greeting_end", "02:00")
         self.night_greeting_replies = self._get_config("night_greeting_replies", [])
 
         # === 晚安车报名配置 ===
         self.night_bus_enabled = self._get_config("night_bus_enabled", True)
-        self.night_bus_start = self._get_config("night_bus_start", "18:00")
-        self.night_bus_end = self._get_config("night_bus_end", "00:00")
+        self.night_bus_start = self._validate_time_config("night_bus_start", "18:00")
+        self.night_bus_end = self._validate_time_config("night_bus_end", "00:00")
+
+        # === 晚安车发车通知配置 ===
+        self.night_bus_notify_enabled = self._get_config("night_bus_notify_enabled", True)
+        self.night_bus_notify_time = self._validate_time_config("night_bus_notify_time", "22:00")
 
     async def initialize(self) -> None:
         """插件激活时启动定时任务"""
@@ -338,6 +342,12 @@ class ForestRoomPlugin(Star):
                         current_time == self.morning_notify_time and
                         current_weekday in self.morning_notify_days):
                         await self._send_morning_notify()
+
+                    # 晚安车发车通知（在晚安通知之前）
+                    if (self.night_bus_notify_enabled and
+                        current_time == self.night_bus_notify_time and
+                        current_weekday in self.night_notify_days):  # 复用晚安通知的日期配置
+                        await self._send_night_bus_notify()
 
                     # 晚安通知
                     if (self.night_notify_enabled and
@@ -499,7 +509,7 @@ class ForestRoomPlugin(Star):
             return message, tree_id
 
     async def _send_night_notify(self):
-        """发送晚安通知（附带晚安车报名人员）"""
+        """发送晚安通知"""
         logger.info("发送晚安通知")
 
         if not self.whitelist:
@@ -511,20 +521,38 @@ class ForestRoomPlugin(Star):
             return
 
         for group_id in self.whitelist:
-            # 构建消息
-            message = self.night_notify_text
-
-            # 检查晚安车报名人数
-            signups = self.db.get_night_bus_signups(group_id)
-            if len(signups) > 2:
-                names = [name or uid for uid, name in signups]
-                message += f"\n\n🚌 晚安车等待发车，请司机和各位乘客准备！今日乘客 {len(signups)} 人："
-                message += "\n" + "、".join(names)
-
             try:
-                await self._send_group_message(group_id, message)
+                await self._send_group_message(group_id, self.night_notify_text)
             except Exception as e:
                 logger.error(f"发送消息到群 {group_id} 失败: {e}")
+
+    async def _send_night_bus_notify(self):
+        """发送晚安车发车通知（附带报名人员名单）"""
+        logger.info("发送晚安车发车通知")
+
+        if not self.whitelist:
+            logger.debug("白名单为空，跳过推送")
+            return
+
+        if not self._platform_id:
+            logger.warning("平台 ID 未初始化，跳过推送")
+            return
+
+        for group_id in self.whitelist:
+            signups = self.db.get_night_bus_signups(group_id)
+
+            # 只有报名人数 > 2 才发送发车通知
+            if len(signups) > 2:
+                names = [name or uid for uid, name in signups]
+                message = f"🚌 晚安车准备发车，请司机和各位乘客准备！\n\n今日乘客 {len(signups)} 人："
+                message += "\n" + "、".join(names)
+
+                try:
+                    await self._send_group_message(group_id, message)
+                except Exception as e:
+                    logger.error(f"发送消息到群 {group_id} 失败: {e}")
+            else:
+                logger.debug(f"群 {group_id} 晚安车报名人数不足 3 人，不发送发车通知")
 
     async def _send_weekstat(self):
         """发送周统计排行"""
@@ -625,6 +653,23 @@ class ForestRoomPlugin(Star):
             return hours * 60 + minutes
         except (ValueError, AttributeError):
             return -1
+
+    def _validate_time_config(self, key: str, default: str) -> str:
+        """
+        验证时间配置项格式，如果无效则返回默认值
+
+        Args:
+            key: 配置键名
+            default: 默认值
+
+        Returns:
+            str: 有效的时间字符串
+        """
+        value = self._get_config(key, default)
+        if self._parse_time(value) < 0:
+            logger.warning(f"配置项 {key} 的值 '{value}' 格式无效，使用默认值 '{default}'")
+            return default
+        return value
 
     def _is_in_time_range(self, current_time: str, start_time: str, end_time: str) -> bool:
         """
@@ -1113,13 +1158,13 @@ class ForestRoomPlugin(Star):
         # 早安关键词（按长度降序，优先匹配更长的关键词）
         morning_keywords = [
             "早安呀", "早上好", "早早早", "早呀", "早哟", "早啊",  # 长词优先
-            "早安", "早"  # 短词放后面
+            "早安"  # 短词放后面，移除单独的"早"避免误触发
         ]
         # 晚安关键词（按长度降序）
         night_keywords = [
             "晚安车",  # 特殊词，用于排除
             "晚安呀", "晚安哟", "晚上好", "早点睡",  # 长词优先
-            "晚安", "晚啦", "睡啦", "安安", "好梦", "晚"  # 短词放后面
+            "晚安", "晚啦", "睡啦", "好梦"  # 短词放后面，移除"安安"和"晚"避免误触发
         ]
 
         # 检测早安关键词（互斥检测）
@@ -1448,6 +1493,24 @@ class ForestRoomPlugin(Star):
             msg += "、".join(names)
 
         yield event.plain_result(msg)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest晚安车通知开启")
+    async def enable_night_bus_notify(self, event: AstrMessageEvent):
+        """开启晚安车发车通知"""
+        self.night_bus_notify_enabled = True
+        self.config["night_bus_notify_enabled"] = True
+        self.config.save_config()
+        yield event.plain_result(f"✅ 晚安车发车通知已开启 ({self.night_bus_notify_time})")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest晚安车通知关闭")
+    async def disable_night_bus_notify(self, event: AstrMessageEvent):
+        """关闭晚安车发车通知"""
+        self.night_bus_notify_enabled = False
+        self.config["night_bus_notify_enabled"] = False
+        self.config.save_config()
+        yield event.plain_result("❌ 晚安车发车通知已关闭")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest统计开启")

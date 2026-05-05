@@ -83,8 +83,8 @@
     "night_notify_time": {
         "description": "晚安通知时间（HH:MM格式）",
         "type": "string",
-        "hint": "晚安通知的推送时间，默认22:00",
-        "default": "22:00"
+        "hint": "晚安通知的推送时间，默认23:00",
+        "default": "23:00"
     },
     "night_notify_days": {
         "description": "晚安通知日期（0=周日，1-6=周一至周六）",
@@ -100,6 +100,18 @@
         "type": "string",
         "hint": "晚安通知的内容",
         "default": "夜深了，该休息啦，晚安！明天继续种树~"
+    },
+    "night_bus_notify_enabled": {
+        "description": "启用晚安车发车通知",
+        "type": "bool",
+        "hint": "是否启用晚安车发车通知（在晚安通知之前推送）",
+        "default": true
+    },
+    "night_bus_notify_time": {
+        "description": "晚安车发车通知时间（HH:MM格式）",
+        "type": "string",
+        "hint": "晚安车发车通知的推送时间，默认22:00",
+        "default": "22:00"
     },
     "weekstat_enabled": {
         "description": "启用周统计推送",
