@@ -1,8 +1,15 @@
-# Forest 房间密钥提取插件
+# Forest 陪伴助手
 
-一个用于 AstrBot 的多功能 Forest 专注森林辅助插件，支持房间密钥提取、每日打卡、定时通知、树种推送、AI 智能回复等功能。
+一个用于 AstrBot 的 Forest 专注森林贴心陪伴插件，提供早安晚安通知、晚安车、打卡统计、树种推送、AI 智能回复等全方位陪伴功能。
 
 ## 功能特性
+
+### 🌅 早安晚安通知
+- 早安打卡提醒（可配置时间和日期）
+- 晚安休息提醒
+- 晚安车发车通知（晚安通知前一小时）
+- 周统计排行榜自动推送
+- 每周学习目标讨论推送
 
 ### 🔑 房间密钥提取
 - 自动检测 Forest 房间邀请消息格式 `输入我的房间密钥：XXXXXX，和我一起`
@@ -15,12 +22,6 @@
 - 自动统计本周打卡天数
 - 支持查询个人打卡记录
 - 管理员可查看周排行榜
-
-### ⏰ 定时通知
-- 早安打卡提醒（可配置时间和日期）
-- 晚安休息提醒
-- 周统计排行榜自动推送
-- 每周学习目标讨论推送
 
 ### 🌲 树种推送系统
 - 早安通知自动附带每日树种介绍和图片
@@ -99,7 +100,7 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `night_notify_enabled` | bool | `true` | 是否启用晚安通知 |
-| `night_notify_time` | string | `22:00` | 通知时间（HH:MM 格式） |
+| `night_notify_time` | string | `23:00` | 通知时间（HH:MM 格式） |
 | `night_notify_days` | list | `[0,1,2,3,4,5,6]` | 通知日期 |
 | `night_notify_text` | string | 见配置 | 晚安通知文案 |
 
@@ -154,6 +155,13 @@ git clone https://github.com/Auro161/astrbot_plugin_forest_room.git
 | `night_greeting_start` | string | `21:00` | 晚安回复开始时间 |
 | `night_greeting_end` | string | `02:00` | 晚安回复结束时间（支持跨天） |
 | `night_greeting_replies` | list | 见配置 | 晚安回复内容列表（随机选择） |
+
+### 晚安车发车通知配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `night_bus_notify_enabled` | bool | `true` | 是否启用晚安车发车通知 |
+| `night_bus_notify_time` | string | `22:00` | 发车通知时间（晚安通知前一小时） |
 
 ### 晚安车报名配置
 
