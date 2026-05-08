@@ -126,8 +126,12 @@ class ForestRoomPlugin(Star):
         self._ai_queried_tree_ids: list[str] = []
         self._ai_tree_lock = asyncio.Lock()  # AI 树种查询缓存锁
 
-        # Forest 房间密钥正则表达式
-        self.key_pattern = re.compile(r"输入我的房间密钥：([A-Z0-9]+)，和我一起")
+        # Forest 房间密钥提取模式（优先级：链接 > 英文文本 > 中文文本）
+        self.key_patterns = {
+            'link': re.compile(r"forestapp\.cc/join-room\?token=([A-Z0-9]+)", re.IGNORECASE),
+            'text_en': re.compile(r"room code[:：]\s*([A-Z0-9]+)", re.IGNORECASE),
+            'text_zh': re.compile(r"房间密钥[:：]\s*([A-Z0-9]+)"),
+        }
 
         logger.info(f"Forest 房间密钥提取插件已加载，启用状态: {self.enabled}")
 
@@ -999,11 +1003,28 @@ class ForestRoomPlugin(Star):
         if not message_text:
             return
 
-        match = self.key_pattern.search(message_text)
-        if not match:
+        # 多模式提取房间密钥（优先级：链接 > 英文文本 > 中文文本）
+        room_key = None
+        
+        # 1. 优先从链接提取
+        match = self.key_patterns['link'].search(message_text)
+        if match:
+            room_key = match.group(1)
+        
+        # 2. 如果没有链接，尝试从文本提取（英文）
+        if not room_key:
+            match = self.key_patterns['text_en'].search(message_text)
+            if match:
+                room_key = match.group(1)
+        
+        # 3. 如果还没有，尝试从文本提取（中文）
+        if not room_key:
+            match = self.key_patterns['text_zh'].search(message_text)
+            if match:
+                room_key = match.group(1)
+        
+        if not room_key:
             return
-
-        room_key = match.group(1)
         group_id = event.get_group_id()
 
         if group_id:
