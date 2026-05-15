@@ -23,6 +23,13 @@ from astrbot.api import FunctionTool, ToolSet
 
 # 不要使用这样的from astrbot.core.agent.tool import FunctionTool, ToolSet，这个会报错，需要使用这样的from astrbot.api import FunctionTool, ToolSet
 
+def _get_message_id(event) -> int | None:
+    """从事件中获取原始 OneBot 消息 ID"""
+    raw = getattr(event.message_obj, "raw_message", None)
+    if isinstance(raw, dict):
+        return raw.get("message_id")
+    return None
+
 from .database import ForestDB
 
 
@@ -200,6 +207,9 @@ class ForestRoomPlugin(Star):
         self.rate_limit_count = self._get_config("rate_limit_count", 10)
         self.group_timestamps: defaultdict[str, deque] = defaultdict(deque)
         self._rate_limit_lock = asyncio.Lock()  # 限流数据锁
+
+        # === 撤回同步配置 ===
+        self.auto_recall_on_delete = self._get_config("auto_recall_on_delete", True)
 
         # === 通知配置 ===
         # 早安通知
@@ -847,6 +857,25 @@ class ForestRoomPlugin(Star):
 
             return f"随机推荐：{zh} ({en}) [{tier}]\n{desc}"
 
+        async def random_tree_seed(context, **kwargs) -> str:
+            """随机抽取一颗树种种子，当用户提到送树、奖励树、推荐树种、想要树等相关意图时使用"""
+            if not self.tree_manager.trees_list:
+                return "树种数据未加载"
+
+            tree_id, info = random.choice(self.tree_manager.trees_list)
+
+            # 记录查询到的树种 ID（使用锁保护）
+            async with self._ai_tree_lock:
+                if tree_id not in self._ai_queried_tree_ids:
+                    self._ai_queried_tree_ids.append(tree_id)
+
+            zh = info.get("zh", "未知")
+            en = info.get("en", "")
+            tier = info.get("tier", "")
+            desc = info.get("description", "")
+
+            return f"名称：{zh}（{en}）| 稀有度：{tier} | 描述：{desc}"
+
         async def get_tree_stats(context, **kwargs) -> str:
             """获取树种统计信息"""
             total = len(self.tree_manager.trees_list)
@@ -906,6 +935,12 @@ class ForestRoomPlugin(Star):
                 parameters={"type": "object", "properties": {}},
                 description="随机推荐一个树种",
                 handler=get_random_tree,
+            ),
+            FunctionTool(
+                name="random_tree_seed",
+                parameters={"type": "object", "properties": {}},
+                description="随机抽取一颗树种种子，当用户提到送树、奖励树、推荐树种、想要树等相关意图时使用",
+                handler=random_tree_seed,
             ),
             FunctionTool(
                 name="get_tree_stats",
@@ -999,6 +1034,13 @@ class ForestRoomPlugin(Star):
         if not self.enabled:
             return
 
+        # 🆕 优先处理群消息撤回通知
+        raw = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw, dict) and raw.get("post_type") == "notice" \
+                and raw.get("notice_type") == "group_recall":
+            await self._handle_group_recall(event, raw)
+            return
+
         message_text = event.message_str
         if not message_text:
             return
@@ -1039,7 +1081,63 @@ class ForestRoomPlugin(Star):
 
         logger.info(f"检测到 Forest 房间邀请，密钥: {room_key}, 群: {group_id or '私聊'}")
         reply_text = self.reply_format.format(key=room_key)
-        await event.send(event.plain_result(reply_text))
+
+        # 🆕 如果启用了撤回同步且是QQ群消息，使用手动发送以捕获 message_id
+        original_msg_id = _get_message_id(event)
+        if (self.auto_recall_on_delete and group_id and original_msg_id
+                and hasattr(event, 'bot')):
+            try:
+                result = await event.bot.call_action(
+                    "send_group_msg",
+                    group_id=int(group_id),
+                    message=reply_text
+                )
+                reply_msg_id = result.get("message_id")
+                if reply_msg_id:
+                    user_id = event.get_sender_id()
+                    self.db.save_room_key_mapping(
+                        group_id, original_msg_id, reply_msg_id,
+                        room_key, user_id
+                    )
+                    logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}")
+            except Exception as e:
+                logger.error(f"发送房间密钥回复失败: {e}")
+                # 回退到普通发送
+                await event.send(event.plain_result(reply_text))
+        else:
+            await event.send(event.plain_result(reply_text))
+
+    # === 撤回同步处理 ===
+
+    async def _handle_group_recall(self, event: AstrMessageEvent, raw: dict):
+        """处理群消息撤回：同步撤回机器人发的邀请码"""
+        if not self.auto_recall_on_delete:
+            return
+
+        recalled_msg_id = raw.get("message_id")
+        group_id = str(raw.get("group_id", ""))
+
+        if not recalled_msg_id or not group_id:
+            return
+
+        # 查数据库找映射
+        mapping = self.db.find_room_key_mapping(group_id, recalled_msg_id)
+        if not mapping:
+            logger.debug(f"未找到已撤回消息的映射: msg_id={recalled_msg_id}")
+            return
+
+        reply_msg_id = mapping["reply_msg_id"]
+
+        # 撤回机器人的回复
+        try:
+            if hasattr(event, 'bot'):
+                await event.bot.call_action("delete_msg", message_id=reply_msg_id)
+                logger.info(f"已同步撤回回复: original={recalled_msg_id}, reply={reply_msg_id}")
+        except Exception as e:
+            logger.error(f"同步撤回失败: {e}")
+
+        # 清理映射记录
+        self.db.delete_room_key_mapping(group_id, recalled_msg_id)
 
     # === 基础命令 ===
 
@@ -1057,6 +1155,14 @@ class ForestRoomPlugin(Star):
         self.enabled = False
         yield event.plain_result("❌ Forest 房间密钥提取功能已关闭")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest撤回同步")
+    async def toggle_recall_sync(self, event: AstrMessageEvent):
+        """切换撤回同步功能开关"""
+        self.auto_recall_on_delete = not self.auto_recall_on_delete
+        status = "✅ 启用" if self.auto_recall_on_delete else "❌ 禁用"
+        yield event.plain_result(f"撤回同步已{status}\n当有人撤回包含 Forest 房间邀请的消息时，机器人将{'会' if self.auto_recall_on_delete else '不会'}同步撤回自己的回复")
+
     @filter.command("forest状态")
     async def forest_status(self, event: AstrMessageEvent):
         """查看 Forest 功能状态"""
@@ -1067,12 +1173,15 @@ class ForestRoomPlugin(Star):
         morning_status = "✅ 启用" if self.morning_notify_enabled else "❌ 禁用"
         night_status = "✅ 启用" if self.night_notify_enabled else "❌ 禁用"
 
+        recall_status = "✅ 启用" if self.auto_recall_on_delete else "❌ 禁用"
+
         result = f"""🌲 Forest 插件状态
 状态: {status}
 白名单群: {whitelist_str}
 黑名单群: {blacklist_str}
 回复格式: {self.reply_format}
 限流: {rate_limit_status} ({self.rate_limit_count}次/{self.rate_limit_window}秒)
+撤回同步: {recall_status}
 早安通知: {morning_status} ({self.morning_notify_time})
 晚安通知: {night_status} ({self.night_notify_time})"""
 
@@ -1290,6 +1399,8 @@ class ForestRoomPlugin(Star):
 - 取消：用户说"取消报名"、"取消晚安车报名"、"取消"等
 - 查询：用户说"晚安车有谁"、"晚安车名单"、"有多少人报名"、"有谁"等
 - 统计：用户说"我晚安车几次"、"我参加了几次"、"晚安车统计"等"""
+
+        system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
 
         # 获取当前 chat provider
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
