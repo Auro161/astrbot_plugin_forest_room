@@ -66,6 +66,36 @@ class ForestDB:
             conn.execute("""CREATE INDEX IF NOT EXISTS idx_night_bus_lookup
                 ON night_bus_signups(group_id, signup_date)""")
 
+            # 房间密钥映射表（用于撤回同步）
+            conn.execute("""CREATE TABLE IF NOT EXISTS room_key_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id TEXT NOT NULL,
+                original_msg_id INTEGER NOT NULL,
+                reply_msg_id INTEGER NOT NULL,
+                room_key TEXT NOT NULL,
+                user_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_room_key_lookup
+                ON room_key_mappings(group_id, original_msg_id)""")
+
+            # 专注统计表
+            conn.execute("""CREATE TABLE IF NOT EXISTS focus_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                group_id TEXT,
+                room_key TEXT NOT NULL,
+                duration_minutes INTEGER,
+                tree_name TEXT,
+                tree_name_en TEXT,
+                focused_at DATETIME NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_focus_user
+                ON focus_sessions(user_id, group_id)""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_focus_date
+                ON focus_sessions(focused_at)""")
+
             conn.commit()
 
     # === 打卡相关 ===
@@ -467,3 +497,204 @@ class ForestDB:
                 "total_signups": 0,
                 "top_passengers": []
             }
+
+    # === 房间密钥映射（撤回同步） ===
+
+    def save_room_key_mapping(self, group_id: str, original_msg_id: int,
+                               reply_msg_id: int, room_key: str,
+                               user_id: str = None) -> bool:
+        """保存房间密钥消息映射"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO room_key_mappings
+                       (group_id, original_msg_id, reply_msg_id, room_key, user_id)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (group_id, original_msg_id, reply_msg_id, room_key, user_id)
+                )
+                conn.commit()
+                return True
+        except sqlite3.Error as e:
+            logger.error(f"保存房间密钥映射失败: {e}")
+            return False
+
+    def find_room_key_mapping(self, group_id: str, original_msg_id: int) -> Optional[dict]:
+        """查找房间密钥映射"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT id, group_id, original_msg_id, reply_msg_id, room_key, user_id, created_at
+                       FROM room_key_mappings
+                       WHERE group_id = ? AND original_msg_id = ?""",
+                    (group_id, original_msg_id)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "group_id": row[1],
+                        "original_msg_id": row[2],
+                        "reply_msg_id": row[3],
+                        "room_key": row[4],
+                        "user_id": row[5],
+                        "created_at": row[6]
+                    }
+                return None
+        except sqlite3.Error as e:
+            logger.error(f"查找房间密钥映射失败: {e}")
+            return None
+
+    def delete_room_key_mapping(self, group_id: str, original_msg_id: int) -> bool:
+        """删除房间密钥映射"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """DELETE FROM room_key_mappings
+                       WHERE group_id = ? AND original_msg_id = ?""",
+                    (group_id, original_msg_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"删除房间密钥映射失败: {e}")
+            return False
+
+    # === 专注统计相关 ===
+
+    def save_focus_session(self, user_id: str, group_id: str, room_key: str,
+                            duration_minutes: int = None, tree_name: str = None,
+                            tree_name_en: str = None) -> bool:
+        """保存一条专注记录"""
+        now = datetime.now()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """INSERT INTO focus_sessions
+                       (user_id, group_id, room_key, duration_minutes,
+                        tree_name, tree_name_en, focused_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, group_id, room_key, duration_minutes,
+                     tree_name, tree_name_en, now)
+                )
+                conn.commit()
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"保存专注记录失败: {e}")
+            return False
+
+    def get_user_focus_stats(self, user_id: str, group_id: str = None,
+                              days: int = None) -> dict:
+        """
+        获取用户专注统计
+        返回: {total_sessions, total_minutes, avg_minutes, favorite_tree, recent_sessions}
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # 基础筛选条件
+                conditions = ["user_id = ?"]
+                params = [user_id]
+                if group_id:
+                    conditions.append("group_id = ?")
+                    params.append(group_id)
+                if days is not None:
+                    date_limit = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+                    conditions.append("focused_at >= ?")
+                    params.append(date_limit)
+
+                where_clause = " AND ".join(conditions)
+
+                # 总次数和总时长
+                cursor = conn.execute(
+                    f"""SELECT COUNT(*), COALESCE(SUM(duration_minutes), 0)
+                       FROM focus_sessions WHERE {where_clause}""",
+                    params
+                )
+                total_sessions, total_minutes = cursor.fetchone()
+
+                # 最常用的树种
+                cursor = conn.execute(
+                    f"""SELECT COALESCE(tree_name, tree_name_en) as tree, COUNT(*) as cnt
+                       FROM focus_sessions
+                       WHERE {where_clause} AND (tree_name IS NOT NULL OR tree_name_en IS NOT NULL)
+                       GROUP BY tree
+                       ORDER BY cnt DESC
+                       LIMIT 1""",
+                    params
+                )
+                fav_row = cursor.fetchone()
+                favorite_tree = fav_row[0] if fav_row else "未知"
+
+                # 最近 5 条记录
+                cursor = conn.execute(
+                    f"""SELECT room_key, duration_minutes, tree_name, tree_name_en, focused_at
+                       FROM focus_sessions
+                       WHERE {where_clause}
+                       ORDER BY focused_at DESC
+                       LIMIT 5""",
+                    params
+                )
+                recent = []
+                for row in cursor.fetchall():
+                    recent.append({
+                        "room_key": row[0],
+                        "duration": row[1],
+                        "tree_name": row[2],
+                        "tree_name_en": row[3],
+                        "focused_at": row[4],
+                    })
+
+            avg_minutes = round(total_minutes / total_sessions, 1) if total_sessions > 0 else 0
+
+            return {
+                "total_sessions": total_sessions,
+                "total_minutes": total_minutes,
+                "avg_minutes": avg_minutes,
+                "favorite_tree": favorite_tree,
+                "recent_sessions": recent,
+            }
+        except sqlite3.Error as e:
+            logger.error(f"查询专注统计失败: {e}")
+            return {
+                "total_sessions": 0,
+                "total_minutes": 0,
+                "avg_minutes": 0,
+                "favorite_tree": "未知",
+                "recent_sessions": [],
+            }
+
+    # === 今日专注总时长 ===
+
+    def get_today_group_focus_minutes(self, group_id: str) -> int:
+        """获取今日某群的专注总时长（分钟）"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT COALESCE(SUM(duration_minutes), 0)
+                       FROM focus_sessions
+                       WHERE group_id = ? AND focused_at >= ?""",
+                    (group_id, today)
+                )
+                result = cursor.fetchone()
+                return result[0] if result else 0
+        except sqlite3.Error as e:
+            logger.error(f"查询今日专注总时长失败: {e}")
+            return 0
+
+    def cleanup_old_room_key_mappings(self, hours: int = 48) -> int:
+        """清理超过指定小时的旧映射记录，返回删除条数"""
+        try:
+            cut_time = datetime.now() - timedelta(hours=hours)
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """DELETE FROM room_key_mappings WHERE created_at < ?""",
+                    (cut_time,)
+                )
+                conn.commit()
+                deleted = cursor.rowcount
+                if deleted:
+                    logger.info(f"已清理 {deleted} 条旧的房间密钥映射")
+                return deleted
+        except sqlite3.Error as e:
+            logger.error(f"清理旧映射失败: {e}")
+            return 0

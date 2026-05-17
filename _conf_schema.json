@@ -293,5 +293,11 @@
         "type": "string",
         "hint": "晚安车报名时间段的结束时间，如 00:00",
         "default": "00:00"
+    },
+    "auto_recall_on_delete": {
+        "description": "撤回同步开关",
+        "type": "bool",
+        "hint": "当群成员撤回消息后，机器人自动同步撤回已提取的房间密钥回复",
+        "default": true
     }
 }

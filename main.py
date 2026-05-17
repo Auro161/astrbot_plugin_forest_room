@@ -140,6 +140,12 @@ class ForestRoomPlugin(Star):
             'text_zh': re.compile(r"房间密钥[:：]\s*([A-Z0-9]+)"),
         }
 
+        # 专注信息提取模式（时长、树种）
+        self.focus_patterns = {
+            'zh': re.compile(r'和我一起种棵\s*(\d+)\s*分钟的\s*(\S+)'),
+            'en': re.compile(r'plant a (\d+)-minute\s+(\S+)', re.IGNORECASE),
+        }
+
         logger.info(f"Forest 房间密钥提取插件已加载，启用状态: {self.enabled}")
 
     def _get_config(self, key: str, default):
@@ -222,7 +228,7 @@ class ForestRoomPlugin(Star):
         self.night_notify_enabled = self._get_config("night_notify_enabled", True)
         self.night_notify_time = self._validate_time_config("night_notify_time", "23:00")
         self.night_notify_days = self._get_config("night_notify_days", [0, 1, 2, 3, 4, 5, 6])
-        self.night_notify_text = self._get_config("night_notify_text", "夜深了，该休息啦，晚安！明天继续种树~")
+        self.night_notify_text = self._get_config("night_notify_text", "该休息啦，劳逸结合才能发挥最大的学习效率，晚安！明天继续种树~")
 
         # 周统计
         self.weekstat_enabled = self._get_config("weekstat_enabled", True)
@@ -270,6 +276,16 @@ class ForestRoomPlugin(Star):
         self.night_greeting_start = self._validate_time_config("night_greeting_start", "21:00")
         self.night_greeting_end = self._validate_time_config("night_greeting_end", "02:00")
         self.night_greeting_replies = self._get_config("night_greeting_replies", [])
+
+        # === 今日专注总结配置 ===
+        self.night_summary_enabled = self._get_config("night_summary_enabled", True)
+        self._fallback_summaries = [
+            "{}分钟，每一分钟都在为未来浇水，明天继续浇灌吧",
+            "今天一起种下了{}分钟的森林，日积月累，终成参天大树",
+            "专注的{}分钟里，每一步都算数，休息好了明天继续前进",
+            "{}分钟的努力已经存入人生进度条，明天再刷新纪录",
+            "今天的专注时间累积了{}分钟，时间看得见，努力不会白费",
+        ]
 
         # === 晚安车报名配置 ===
         self.night_bus_enabled = self._get_config("night_bus_enabled", True)
@@ -524,8 +540,44 @@ class ForestRoomPlugin(Star):
             logger.info(f"今日推送树种: {zh_name} (ID: {tree_id})")
             return message, tree_id
 
+    async def _generate_focus_summary(self, minutes: int) -> str:
+        """调用 AI 生成今日专注时长的简短介绍"""
+        if minutes <= 0:
+            return ""
+
+        try:
+            provider = self.context.get_using_provider()
+            if not provider:
+                raise Exception("No provider available")
+
+            provider_id = provider.meta().id
+            prompt = (
+                f"今天一个学习社群里，大家一共专注了 {minutes} 分钟。"
+                "请用一句简短自然的话(20-50字)介绍一下这个专注时长，"
+                "语气温暖但不要过于热情，也不要用任何emoji和符号，一句话即可。"
+            )
+
+            response = await asyncio.wait_for(
+                self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                ),
+                timeout=10.0
+            )
+
+            result = response.completion_text.strip()
+            if result:
+                return result
+        except asyncio.TimeoutError:
+            logger.warning("AI 生成专注总结超时")
+        except Exception as e:
+            logger.warning(f"AI 生成专注总结失败: {e}")
+
+        # 兜底：随机选取预设文案
+        return random.choice(self._fallback_summaries).format(minutes)
+
     async def _send_night_notify(self):
-        """发送晚安通知"""
+        """发送晚安通知（含今日专注总结）"""
         logger.info("发送晚安通知")
 
         if not self.whitelist:
@@ -538,7 +590,17 @@ class ForestRoomPlugin(Star):
 
         for group_id in self.whitelist:
             try:
-                await self._send_group_message(group_id, self.night_notify_text)
+                message = self.night_notify_text
+
+                # 查询今日专注总时长并生成总结
+                if self.night_summary_enabled:
+                    today_minutes = self.db.get_today_group_focus_minutes(group_id)
+                    if today_minutes > 0:
+                        summary = await self._generate_focus_summary(today_minutes)
+                        if summary:
+                            message += "\n\n━━━ 今日专注小报 ━━━" + "\n今天群里一共专注了 " + str(today_minutes) + " 分钟" + "\n\n" + summary
+
+                await self._send_group_message(group_id, message)
             except Exception as e:
                 logger.error(f"发送消息到群 {group_id} 失败: {e}")
 
@@ -1069,6 +1131,39 @@ class ForestRoomPlugin(Star):
             return
         group_id = event.get_group_id()
 
+        # === 解析并保存专注信息（专注时长、树木名称） ===
+        try:
+            user_id = event.get_sender_id()
+            duration_minutes = None
+            tree_name = None
+            tree_name_en = None
+
+            # 中文格式：和我一起种棵 120 分钟的 烟花树
+            match = self.focus_patterns['zh'].search(message_text)
+            if match:
+                duration_minutes = int(match.group(1))
+                tree_name = match.group(2)
+
+            # 英文格式：plant a 60-minute Wisteria
+            match = self.focus_patterns['en'].search(message_text)
+            if match:
+                if duration_minutes is None:
+                    duration_minutes = int(match.group(1))
+                tree_name_en = match.group(2)
+
+            # 保存专注记录（无论群聊/私聊都保存，确保数据完整）
+            self.db.save_focus_session(
+                user_id=user_id or '',
+                group_id=group_id or '',
+                room_key=room_key,
+                duration_minutes=duration_minutes,
+                tree_name=tree_name,
+                tree_name_en=tree_name_en,
+            )
+            logger.info(f"已保存专注记录: 密钥={room_key}, 时长={duration_minutes}分钟, 树={tree_name or tree_name_en}")
+        except Exception as e:
+            logger.error(f"保存专注记录失败: {e}")
+
         if group_id:
             if self.whitelist and group_id not in self.whitelist:
                 logger.debug(f"群 {group_id} 不在白名单中，跳过")
@@ -1186,6 +1281,57 @@ class ForestRoomPlugin(Star):
 晚安通知: {night_status} ({self.night_notify_time})"""
 
         yield event.plain_result(result)
+
+    # === 专注统计 ===
+
+    @filter.command("forest专注统计")
+    async def focus_stats(self, event: AstrMessageEvent):
+        """查看个人专注统计（专注时长、树木频率等）"""
+        user_id = event.get_sender_id()
+        group_id = event.get_group_id()
+
+        stats = self.db.get_user_focus_stats(user_id=user_id or '', group_id=group_id or '')
+
+        if stats["total_sessions"] == 0:
+            yield event.plain_result("📊 暂无专注记录\n加入 Forest 房间后，机器人会自动记录你的专注数据哦～")
+            return
+
+        total_minutes = stats["total_minutes"]
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        time_str = f"{hours} 小时 {minutes} 分钟" if hours > 0 else f"{minutes} 分钟"
+
+        lines = [
+            "📊 你的专注统计",
+            "━━━━━━━━━━━━━━",
+            f"🎯 总专注次数：{stats['total_sessions']} 次",
+            f"⏱️ 总专注时长：{time_str}",
+            f"📈 平均专注：{stats['avg_minutes']} 分钟/次",
+        ]
+
+        if stats["favorite_tree"] != "未知":
+            lines.append(f"🌳 最常种的树：{stats['favorite_tree']}")
+
+        if stats["recent_sessions"]:
+            lines.append("")
+            lines.append("📋 最近专注记录：")
+            for s in stats["recent_sessions"]:
+                try:
+                    dt = s["focused_at"]
+                    if isinstance(dt, str):
+                        dt_parsed = datetime.fromisoformat(dt)
+                    else:
+                        dt_str = str(dt).split('.')[0] if '.' in str(dt) else str(dt)
+                        dt_parsed = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+                    time_str_short = dt_parsed.strftime("%m/%d %H:%M")
+                except:
+                    time_str_short = str(s["focused_at"])[:16]
+
+                dur = s["duration"] or "?"
+                tree = s["tree_name"] or s["tree_name_en"] or "未知"
+                lines.append(f"  {time_str_short}  {dur}分钟  {tree}")
+
+        yield event.plain_result("\n".join(lines))
 
     # === 白名单管理 ===
 
