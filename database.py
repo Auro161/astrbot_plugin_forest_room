@@ -96,6 +96,17 @@ class ForestDB:
             conn.execute("""CREATE INDEX IF NOT EXISTS idx_focus_date
                 ON focus_sessions(focused_at)""")
 
+            # 兼容旧表：添加 original_msg_id 字段（已有则跳过）
+            try:
+                conn.execute("ALTER TABLE focus_sessions ADD COLUMN original_msg_id INTEGER")
+            except sqlite3.OperationalError:
+                pass
+
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_focus_msg_id
+                ON focus_sessions(group_id, original_msg_id)""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_focus_room_key
+                ON focus_sessions(group_id, room_key)""")
+
             conn.commit()
 
     # === 打卡相关 ===
@@ -563,18 +574,41 @@ class ForestDB:
 
     def save_focus_session(self, user_id: str, group_id: str, room_key: str,
                             duration_minutes: int = None, tree_name: str = None,
-                            tree_name_en: str = None) -> bool:
-        """保存一条专注记录"""
+                            tree_name_en: str = None,
+                            original_msg_id: int = None) -> bool:
+        """保存一条专注记录（自动去重：同群同房间密钥不重复保存）"""
         now = datetime.now()
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # 去重检查 1：同群已存过相同房间密钥（且未被删除）→ 跳过
+                if group_id:
+                    cursor = conn.execute(
+                        """SELECT 1 FROM focus_sessions
+                           WHERE group_id = ? AND room_key = ?""",
+                        (group_id, room_key)
+                    )
+                    if cursor.fetchone():
+                        logger.debug(f"专注记录已存在（同群同密钥），跳过: group={group_id}, key={room_key}")
+                        return True
+
+                # 去重检查 2：同群同消息ID已存在 → 跳过（防重复处理）
+                if original_msg_id is not None and group_id:
+                    cursor = conn.execute(
+                        """SELECT 1 FROM focus_sessions
+                           WHERE group_id = ? AND original_msg_id = ?""",
+                        (group_id, original_msg_id)
+                    )
+                    if cursor.fetchone():
+                        logger.debug(f"专注记录已存在（同消息ID），跳过: group={group_id}, msg_id={original_msg_id}")
+                        return True
+
                 conn.execute(
                     """INSERT INTO focus_sessions
                        (user_id, group_id, room_key, duration_minutes,
-                        tree_name, tree_name_en, focused_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        tree_name, tree_name_en, focused_at, original_msg_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (user_id, group_id, room_key, duration_minutes,
-                     tree_name, tree_name_en, now)
+                     tree_name, tree_name_en, now, original_msg_id)
                 )
                 conn.commit()
             return True
@@ -680,6 +714,23 @@ class ForestDB:
         except sqlite3.Error as e:
             logger.error(f"查询今日专注总时长失败: {e}")
             return 0
+
+    def delete_focus_session_by_msg_id(self, group_id: str, original_msg_id: int) -> bool:
+        """根据消息ID删除对应的专注记录（消息撤回时使用）"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """DELETE FROM focus_sessions
+                       WHERE group_id = ? AND original_msg_id = ?""",
+                    (group_id, original_msg_id)
+                )
+                conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(f"已删除撤回消息的专注记录: group={group_id}, msg_id={original_msg_id}")
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"删除专注记录失败: {e}")
+            return False
 
     def cleanup_old_room_key_mappings(self, hours: int = 48) -> int:
         """清理超过指定小时的旧映射记录，返回删除条数"""

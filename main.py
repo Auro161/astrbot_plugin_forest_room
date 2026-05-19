@@ -162,6 +162,21 @@ class ForestRoomPlugin(Star):
         value = self.config.get(key)
         return value if value is not None else default
 
+    async def _ensure_platform_id(self) -> bool:
+        """确保平台 ID 已初始化，如果未初始化则尝试从平台管理器获取。"""
+        if self._platform_id:
+            return True
+        try:
+            for inst in self.context.platform_manager.platform_insts:
+                pid = inst.meta().id
+                if pid:
+                    self._platform_id = pid
+                    logger.info(f"已从平台管理器获取平台 ID: {self._platform_id}")
+                    return True
+        except Exception as e:
+            logger.error(f"从平台管理器获取平台 ID 失败: {e}")
+        return False
+
     def _validate_fixed_reply_rules(self, rules: list) -> list:
         """
         验证并过滤无效的固定回复规则
@@ -411,7 +426,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not self._platform_id:
+        if not await self._ensure_platform_id():
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -423,7 +438,7 @@ class ForestRoomPlugin(Star):
 
     async def _send_group_message(self, group_id: str, message: str):
         """发送消息到指定群"""
-        if not self._platform_id:
+        if not await self._ensure_platform_id():
             logger.warning("平台 ID 未初始化，无法发送消息")
             return
 
@@ -441,7 +456,7 @@ class ForestRoomPlugin(Star):
 
     async def _send_group_message_with_image(self, group_id: str, message: str, image_path: Path | None):
         """发送消息到指定群（带图片）"""
-        if not self._platform_id:
+        if not await self._ensure_platform_id():
             logger.warning("平台 ID 未初始化，无法发送消息")
             return
 
@@ -479,7 +494,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not self._platform_id:
+        if not await self._ensure_platform_id():
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -554,7 +569,9 @@ class ForestRoomPlugin(Star):
             prompt = (
                 f"今天一个学习社群里，大家一共专注了 {minutes} 分钟。"
                 "请用一句简短自然的话(20-50字)介绍一下这个专注时长，"
-                "语气温暖但不要过于热情，也不要用任何emoji和符号，一句话即可。"
+                "可以自由发挥，把这段时间换算成有趣的生活类比（比如相当于看了几部电影、"
+                "跑了几公里、喝了几杯咖啡、走了多少步之类的），"
+                "语气温暖自然，不要用任何emoji和符号，一句话即可。"
             )
 
             response = await asyncio.wait_for(
@@ -584,7 +601,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not self._platform_id:
+        if not await self._ensure_platform_id():
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -612,7 +629,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not self._platform_id:
+        if not await self._ensure_platform_id():
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -1130,6 +1147,7 @@ class ForestRoomPlugin(Star):
         if not room_key:
             return
         group_id = event.get_group_id()
+        original_msg_id = _get_message_id(event)
 
         # === 解析并保存专注信息（专注时长、树木名称） ===
         try:
@@ -1151,7 +1169,7 @@ class ForestRoomPlugin(Star):
                     duration_minutes = int(match.group(1))
                 tree_name_en = match.group(2)
 
-            # 保存专注记录（无论群聊/私聊都保存，确保数据完整）
+            # 保存专注记录（自动去重：同消息ID不重复保存）
             self.db.save_focus_session(
                 user_id=user_id or '',
                 group_id=group_id or '',
@@ -1159,6 +1177,7 @@ class ForestRoomPlugin(Star):
                 duration_minutes=duration_minutes,
                 tree_name=tree_name,
                 tree_name_en=tree_name_en,
+                original_msg_id=original_msg_id,
             )
             logger.info(f"已保存专注记录: 密钥={room_key}, 时长={duration_minutes}分钟, 树={tree_name or tree_name_en}")
         except Exception as e:
@@ -1233,6 +1252,9 @@ class ForestRoomPlugin(Star):
 
         # 清理映射记录
         self.db.delete_room_key_mapping(group_id, recalled_msg_id)
+
+        # 同步删除对应的专注记录
+        self.db.delete_focus_session_by_msg_id(group_id, recalled_msg_id)
 
     # === 基础命令 ===
 
@@ -1472,6 +1494,7 @@ class ForestRoomPlugin(Star):
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def on_keyword_message(self, event: AstrMessageEvent):
         """监听群消息，检测关键词或@机器人触发回复"""
+        logger.info(f"[DEBUG] on_keyword_message 被触发! group_id={event.get_group_id()}, is_at={event.is_at_or_wake_command}, msg={event.message_str[:50]}")
         if not self._platform_id:
             self._platform_id = event.get_platform_id()
 
@@ -1482,11 +1505,6 @@ class ForestRoomPlugin(Star):
 
         # 检查是否触发关键词
         is_keyword_trigger = self.keyword_pattern and self.keyword_pattern.search(message_text)
-
-        # 如果没有触发关键词，检查是否是命令（跳过命令）
-        if not is_keyword_trigger:
-            if hasattr(event, 'is_wake_up') and event.is_wake_up:
-                return
 
         # 检查是否触发 @机器人
         is_atme_trigger = event.is_at_or_wake_command
@@ -1546,7 +1564,32 @@ class ForestRoomPlugin(Star):
 - 查询：用户说"晚安车有谁"、"晚安车名单"、"有多少人报名"、"有谁"等
 - 统计：用户说"我晚安车几次"、"我参加了几次"、"晚安车统计"等"""
 
-        system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
+        # === 检测树种推荐意图，提前预选树种确保附带图片 ===
+        tree_recommend_keywords = [
+            "推荐树", "树种推荐", "什么树", "想要树", "送树",
+            "奖励树", "要一颗树", "有没有好看的树", "好看的树",
+            "什么树种", "推荐一个", "推荐一颗"
+        ]
+        is_tree_recommend = any(kw in message_text for kw in tree_recommend_keywords)
+
+        if is_tree_recommend and self.tree_manager.trees_list:
+            # 直接预选一个树种，确保树种 ID 被记录，AI 回复后会附带图片
+            pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
+            async with self._ai_tree_lock:
+                if pre_tree_id not in self._ai_queried_tree_ids:
+                    self._ai_queried_tree_ids.append(pre_tree_id)
+            pre_zh = pre_info.get("zh", "未知")
+            pre_en = pre_info.get("en", "")
+            pre_tier = pre_info.get("tier", "")
+            pre_desc = pre_info.get("description", "")
+            logger.info(f"预选树种供 AI 推荐: {pre_zh} (ID: {pre_tree_id})")
+            system_prompt += f"""
+当前用户请求推荐树种。已为用户预选了一个树种：{pre_zh}（{pre_en}）[{pre_tier}]。
+树种描述：{pre_desc}
+请用可爱的语气为用户介绍这个树种，注意不要再调用 random_tree_seed 等树种查询工具。
+"""
+        else:
+            system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
 
         # 获取当前 chat provider
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
@@ -1564,7 +1607,15 @@ class ForestRoomPlugin(Star):
             )
 
             # 构建消息组件
-            components = [Plain(response.completion_text)]
+            # 优先使用 completion_text，如果为空则尝试从 result_chain 提取
+            logger.info(f"[DEBUG] LLMResponse: role={response.role}, ct={repr(response.completion_text)[:100]}, rc={response.result_chain}")
+            resp_text = response.completion_text or ""
+            if not resp_text and response.result_chain:
+                for comp in response.result_chain.chain:
+                    if isinstance(comp, Plain) and comp.text:
+                        resp_text = comp.text
+                        break
+            components = [Plain(resp_text)]
 
             # 如果 AI 查询了树种，附加图片（使用锁保护读取）
             async with self._ai_tree_lock:
