@@ -107,6 +107,21 @@ class ForestDB:
             conn.execute("""CREATE INDEX IF NOT EXISTS idx_focus_room_key
                 ON focus_sessions(group_id, room_key)""")
 
+            # 倒计时事件表
+            conn.execute("""CREATE TABLE IF NOT EXISTS countdown_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
+            # 插入默认高考倒计时（仅当表为空时）
+            cursor = conn.execute("SELECT COUNT(*) FROM countdown_events")
+            if cursor.fetchone()[0] == 0:
+                conn.execute(
+                    "INSERT INTO countdown_events (name, target_date) VALUES (?, ?)",
+                    ("高考", "06-07")
+                )
+
             conn.commit()
 
     # === 打卡相关 ===
@@ -749,3 +764,96 @@ class ForestDB:
         except sqlite3.Error as e:
             logger.error(f"清理旧映射失败: {e}")
             return 0
+
+    # === 倒计时事件 ===
+
+    def add_countdown_event(self, name: str, target_date: str) -> bool:
+        """添加倒计时事件
+        Args:
+            name: 事件名称（如"高考"）
+            target_date: 目标日期（如"06-07"表示每年6月7日，或"2026-12-25"表示具体日期）
+        Returns:
+            是否成功
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO countdown_events (name, target_date) VALUES (?, ?)",
+                    (name, target_date)
+                )
+                conn.commit()
+                logger.info(f"已添加倒计时事件: {name} -> {target_date}")
+                return True
+        except sqlite3.Error as e:
+            logger.error(f"添加倒计时事件失败: {e}")
+            return False
+
+    def remove_countdown_event(self, event_id: int) -> bool:
+        """删除倒计时事件"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "DELETE FROM countdown_events WHERE id = ?", (event_id,)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"删除倒计时事件失败: {e}")
+            return False
+
+    def list_countdown_events(self) -> list[tuple[int, str, str]]:
+        """列出所有倒计时事件"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT id, name, target_date FROM countdown_events ORDER BY id"
+                )
+                return cursor.fetchall()
+        except sqlite3.Error as e:
+            logger.error(f"查询倒计时事件失败: {e}")
+            return []
+
+    def get_countdown_texts(self) -> list[str]:
+        """获取所有倒计时事件的计算结果文本列表"""
+        events = self.list_countdown_events()
+        if not events:
+            return []
+
+        texts = []
+        now = datetime.now()
+        current_year = now.year
+
+        for event_id, name, target_date in events:
+            try:
+                # 解析目标日期
+                parts = target_date.split("-")
+                if len(parts) == 2:
+                    # 每年重复：MM-DD 格式
+                    month, day = int(parts[0]), int(parts[1])
+                    event_date = datetime(current_year, month, day)
+                    # 如果已过，跳到下一年
+                    if now.date() > event_date.date():
+                        event_date = datetime(current_year + 1, month, day)
+                elif len(parts) == 3:
+                    # 具体日期：YYYY-MM-DD 格式
+                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                    event_date = datetime(year, month, day)
+                    # 已过，不再显示
+                    if now.date() > event_date.date():
+                        continue
+                else:
+                    continue
+
+                days = (event_date.date() - now.date()).days
+
+                if days == 0:
+                    texts.append(f"🎯 {name}：就是今天！")
+                elif days == 1:
+                    texts.append(f"🎯 {name}：明天！加油！💪")
+                else:
+                    texts.append(f"🎯 {name}：{days} 天")
+            except (ValueError, IndexError):
+                logger.warning(f"解析倒计时日期失败: {target_date}")
+                continue
+
+        return texts

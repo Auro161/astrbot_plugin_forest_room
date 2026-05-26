@@ -477,11 +477,17 @@ class ForestRoomPlugin(Star):
             logger.error(f"发送消息到群 {group_id} 异常: {e}")
 
     async def _send_morning_notify(self):
-        """发送早安通知（附带每日树种和图片）"""
+        """发送早安通知（附带每日树种、高考倒计时和图片）"""
         logger.info("发送早安打卡通知")
 
         base_message = self.morning_notify_text
         tree_image_path = None
+
+        # 添加倒计时
+        countdown_texts = self._get_countdown_texts()
+        if countdown_texts:
+            countdown_block = "\n".join(countdown_texts)
+            base_message = f"{base_message}\n\n{countdown_block}"
 
         if self.tree_notify_enabled and self.tree_manager.trees_data:
             tree_message, tree_id = await self._get_daily_tree_message()
@@ -503,6 +509,14 @@ class ForestRoomPlugin(Star):
                 await self._send_group_message_with_image(group_id, base_message, tree_image_path)
             except Exception as e:
                 logger.error(f"发送消息到群 {group_id} 失败: {e}")
+
+    def _get_countdown_texts(self) -> list[str]:
+        """获取所有倒计时事件的文本列表"""
+        try:
+            return self.db.get_countdown_texts()
+        except Exception as e:
+            logger.error(f"获取倒计时文本失败: {e}")
+            return []
 
     async def _get_daily_tree_message(self) -> tuple[str, str] | tuple[None, None]:
         """获取今日推送的树种信息，返回 (消息, 树种ID)"""
@@ -1144,8 +1158,103 @@ class ForestRoomPlugin(Star):
             if match:
                 room_key = match.group(1)
         
+        # === 私聊 AI 回复处理（无房间密钥的私聊消息） ===
         if not room_key:
-            return
+            group_id = event.get_group_id()
+            # 只有私聊才走 AI 回复
+            if group_id:
+                return
+
+            logger.info(f"[私聊AI] 收到私聊消息: {message_text} (sender={event.get_sender_id()})")
+
+            # 清空 AI 树种查询缓存
+            async with self._ai_tree_lock:
+                self._ai_queried_tree_ids = []
+
+            # 构建树种查询工具集
+            tree_tools = self._build_tree_tools()
+
+            # 获取人设提示词
+            persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
+            system_prompt = persona.get("prompt", "") if persona else ""
+            system_prompt += """\n\n你是果果，一个温暖可爱的 Forest 森林陪伴助手。你可以使用工具查询 Forest 树种信息。
+
+当用户询问树种相关问题或想要随机抽取树种时，可以调用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。
+
+重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。"""
+
+            # 检测树种推荐意图，提前预选树种确保附带图片
+            tree_recommend_keywords = [
+                "推荐树", "树种推荐", "什么树", "想要树", "送树",
+                "奖励树", "要一颗树", "有没有好看的树", "好看的树",
+                "什么树种", "推荐一个", "推荐一颗", "抽树", "抽树种",
+                "随机树", "随机树种", "给我一个树", "给我树种", "给我树"
+            ]
+            is_tree_recommend = any(kw in message_text for kw in tree_recommend_keywords)
+
+            if is_tree_recommend and self.tree_manager.trees_list:
+                pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
+                async with self._ai_tree_lock:
+                    if pre_tree_id not in self._ai_queried_tree_ids:
+                        self._ai_queried_tree_ids.append(pre_tree_id)
+                pre_zh = pre_info.get("zh", "未知")
+                pre_en = pre_info.get("en", "")
+                pre_tier = pre_info.get("tier", "")
+                pre_desc = pre_info.get("description", "")
+                logger.info(f"[私聊AI] 预选树种: {pre_zh} (ID: {pre_tree_id})")
+                system_prompt += f"""
+当前用户请求推荐树种。已为用户预选了一个树种：{pre_zh}（{pre_en}）[{pre_tier}]。
+树种描述：{pre_desc}
+请用可爱的语气为用户介绍这个树种，注意不要再调用 random_tree_seed 等树种查询工具。
+"""
+            else:
+                system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
+
+            provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+
+            logger.info(f"[私聊AI] 开始调用 AI")
+            try:
+                response = await self.context.tool_loop_agent(
+                    event=event,
+                    chat_provider_id=provider_id,
+                    prompt=message_text,
+                    tools=tree_tools,
+                    system_prompt=system_prompt,
+                )
+
+                resp_text = response.completion_text or ""
+                if not resp_text and response.result_chain:
+                    for comp in response.result_chain.chain:
+                        if isinstance(comp, Plain) and comp.text:
+                            resp_text = comp.text
+                            break
+
+                components = [Plain(resp_text)]
+
+                async with self._ai_tree_lock:
+                    queried_ids = list(self._ai_queried_tree_ids[:3])
+
+                logger.info(f"[私聊AI] queried_ids={queried_ids}")
+
+                if queried_ids:
+                    for tree_id in queried_ids:
+                        image_path = self.tree_manager.get_tree_image_path(tree_id)
+                        exists = image_path.exists() if image_path else False
+                        logger.info(f"[私聊AI] 图片检查: tree_id={tree_id}, path={image_path}, exists={exists}")
+                        if image_path and exists:
+                            components.append(Image(file=str(image_path)))
+                            logger.info(f"[私聊AI] 已添加图片: {image_path}")
+
+                logger.info(f"[私聊AI] 最终 components 数量: {len(components)}")
+                yield event.chain_result(components)
+                return
+
+            except Exception as e:
+                logger.error(f"[私聊AI] 回复失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return
+
         group_id = event.get_group_id()
         original_msg_id = _get_message_id(event)
 
@@ -1633,6 +1742,8 @@ class ForestRoomPlugin(Star):
             logger.error(f"AI 回复失败: {e}")
             yield event.plain_result("抱歉，处理您的请求时出现了问题。")
 
+
+
     # === 打卡功能 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -2020,5 +2131,74 @@ class ForestRoomPlugin(Star):
 
         if len(results) > 10:
             lines.append(f"... 还有 {len(results) - 10} 个")
+
+        yield event.plain_result("\n".join(lines))
+
+    # === 倒计时管理 ===
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest添加倒计时")
+    async def add_countdown(self, event: AstrMessageEvent, name: str, target_date: str = ""):
+        """添加倒计时事件
+        格式：forest添加倒计时 事件名称 MM-DD
+        或：forest添加倒计时 事件名称 YYYY-MM-DD
+        """
+        if not name or not target_date:
+            yield event.plain_result("请输入事件名称和日期\n格式：forest添加倒计时 高考 06-07")
+            return
+
+        if self.db.add_countdown_event(name, target_date):
+            logger.info(f"已添加倒计时: {name} -> {target_date}")
+            yield event.plain_result(f"✅ 已添加倒计时：{name} -> {target_date}")
+        else:
+            yield event.plain_result("❌ 添加失败")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("forest删除倒计时")
+    async def remove_countdown(self, event: AstrMessageEvent, event_id: int = 0):
+        """删除倒计时事件（按ID删除）
+        格式：forest删除倒计时 ID
+        """
+        if not event_id:
+            yield event.plain_result("请输入要删除的倒计时事件ID\n格式：forest删除倒计时 1")
+            return
+
+        if self.db.remove_countdown_event(event_id):
+            yield event.plain_result(f"✅ 已删除倒计时事件 #{event_id}")
+        else:
+            yield event.plain_result(f"❌ 未找到倒计时事件 #{event_id}")
+
+    @filter.command("forest倒计时列表")
+    async def list_countdown(self, event: AstrMessageEvent):
+        """查看所有倒计时事件"""
+        events = self.db.list_countdown_events()
+        if not events:
+            yield event.plain_result("📭 暂无倒计时事件")
+            return
+
+        now = datetime.now()
+        lines = ["⏰ 倒计时事件列表："]
+        for eid, name, target_date in events:
+            # 计算剩余天数供显示
+            try:
+                parts = target_date.split("-")
+                if len(parts) == 2:
+                    month, day = int(parts[0]), int(parts[1])
+                    event_date = datetime(now.year, month, day)
+                    if now.date() > event_date.date():
+                        event_date = datetime(now.year + 1, month, day)
+                    days = (event_date.date() - now.date()).days
+                    lines.append(f"  #{eid} {name}：{target_date}（每年，还剩{days}天）")
+                elif len(parts) == 3:
+                    event_date = datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+                    days = (event_date.date() - now.date()).days
+                    if days >= 0:
+                        lines.append(f"  #{eid} {name}：{target_date}（还剩{days}天）")
+                    else:
+                        lines.append(f"  #{eid} {name}：{target_date}（已过）")
+                else:
+                    lines.append(f"  #{eid} {name}：{target_date}（格式异常）")
+            except (ValueError, IndexError):
+                lines.append(f"  #{eid} {name}：{target_date}（日期无效）")
 
         yield event.plain_result("\n".join(lines))
