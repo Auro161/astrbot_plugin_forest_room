@@ -1110,9 +1110,13 @@ class ForestRoomPlugin(Star):
         preferred_tree = None
 
         # 提取偏好时间：匹配 "X点"、"X点半"、"X:XX" 等
+        # 先处理 "11点的" → "11点"
+        cleaned = re.sub(r'(\d)\s*的\s*点', r'\1点', message_text)
+        cleaned = re.sub(r'(\d)\s*的\s*:(\d)', r'\1:\2', cleaned)
+
         time_match = re.search(
             r'(?:晚上|今晚|凌晨|早上)?\s*(\d{1,2})\s*[:：点时]\s*(半|\d{0,2})?',
-            message_text
+            cleaned
         )
         if time_match:
             hour = int(time_match.group(1))
@@ -1122,8 +1126,7 @@ class ForestRoomPlugin(Star):
             elif suffix and suffix.isdigit():
                 preferred_time = f"{hour}点{suffix}分" if suffix != '00' else f"{hour}点"
             elif suffix == '':
-                # 确认后面没有跟 "半"（半不在捕获组中）
-                after = message_text[time_match.end():time_match.end()+2]
+                after = cleaned[time_match.end():time_match.end()+2]
                 if after.startswith('半'):
                     preferred_time = f"{hour}点半"
                 else:
@@ -1138,8 +1141,11 @@ class ForestRoomPlugin(Star):
             time_text = time_match.group(0) if time_match else ''
             remaining = remaining.replace(time_text, '')
         # 去掉杂词
-        remaining = re.sub(r'(?:晚上|今晚|凌晨|早上|发车)\s*', '', remaining)
-        remaining = remaining.strip().strip('，,、。\s')
+        remaining = re.sub(r'(?:晚上|今晚|凌晨|早上|发车|的)\s*', '', remaining)
+        remaining = remaining.strip().strip('，,、。·\s')
+        # 如果剩余文本包含"的"，取"的"后面的部分
+        if '的' in remaining:
+            remaining = remaining.split('的')[-1].strip()
 
         if remaining:
             preferred_tree = remaining
@@ -2035,14 +2041,23 @@ class ForestRoomPlugin(Star):
 
         message_text = event.message_str.strip()
 
-        # 判断是否是晚安车相关消息
-        signup_keywords = ["报名晚安车", "我要报名", "晚安车报名", "报名参加晚安车"]
-        modify_keywords = ["修改晚安车", "修改报名晚安车", "更新晚安车"]
-        cancel_keywords = ["取消晚安车", "取消报名晚安车", "取消晚安车报名"]
-        query_keywords = ["晚安车名单", "晚安车有谁", "有谁报了晚安车", "晚安车有多少人", "晚安车名单", "晚安车人数", "晚安车列表"]
+        # 判断是否是晚安车相关消息（支持多种格式，包括标点分隔）
+        has_bus_kw = '晚安车' in message_text or '晚安' in message_text
+        if not has_bus_kw:
+            return
 
-        all_keywords = signup_keywords + modify_keywords + cancel_keywords + query_keywords
-        if not any(kw in message_text for kw in all_keywords):
+        # 更灵活的关键词检测
+        msg_clean = message_text.replace('，', ',').replace(' ', '').replace('\s', '')
+        is_signup = any(kw in msg_clean for kw in ["报名晚安车", "我要报名", "晚安车报名", "报名参加晚安车", "报名晚安"])
+        is_signup = is_signup or ('报名' in msg_clean and '晚安' in msg_clean)
+        is_modify = any(kw in msg_clean for kw in ["修改晚安车", "修改报名晚安车", "更新晚安车", "修改晚安"])
+        is_modify = is_modify or ('修改' in msg_clean and '晚安' in msg_clean)
+        is_cancel = any(kw in msg_clean for kw in ["取消晚安车", "取消报名晚安车", "取消晚安车报名"])
+        is_cancel = is_cancel or ('取消' in msg_clean and '晚安' in msg_clean)
+        is_query = any(kw in msg_clean for kw in ["晚安车名单", "晚安车有谁", "有谁报了晚安车", "晚安车有多少人", "晚安车人数", "晚安车列表", "晚安车查询"])
+        is_query = is_query or any(kw in msg_clean for kw in ["名单", "有谁", "多少人"])
+
+        if not (is_signup or is_modify or is_cancel or is_query):
             return
 
         group_id = event.get_group_id()
@@ -2056,10 +2071,9 @@ class ForestRoomPlugin(Star):
             return
 
         user_id = event.get_sender_id()
-        is_modify = any(kw in message_text for kw in modify_keywords)
 
         # 查询名单
-        if any(kw in message_text for kw in query_keywords):
+        if is_query:
             signups = self.db.get_night_bus_signups(group_id)
             if signups:
                 lines = [f"🚌 今日晚安车已报名 {len(signups)} 人："]
@@ -2071,7 +2085,7 @@ class ForestRoomPlugin(Star):
             return
 
         # 取消报名
-        if any(kw in message_text for kw in cancel_keywords):
+        if is_cancel:
             success = self.db.cancel_night_bus(user_id, group_id)
             if success:
                 signups = self.db.get_night_bus_signups(group_id)
@@ -2087,7 +2101,7 @@ class ForestRoomPlugin(Star):
             return
 
         # 报名 / 修改
-        if any(kw in message_text for kw in signup_keywords + modify_keywords):
+        if is_signup or is_modify:
             current_time = datetime.now().strftime("%H:%M")
             if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
                 await event.send(event.plain_result(
