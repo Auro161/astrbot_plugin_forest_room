@@ -484,9 +484,13 @@ class ForestRoomPlugin(Star):
         tree_image_path = None
 
         # 添加倒计时
-        countdown_texts = self._get_countdown_texts()
+        countdown_texts, today_events = self._get_countdown_texts()
         if countdown_texts:
             countdown_block = "\n".join(countdown_texts)
+            # 当天有事件时追加鼓励语
+            if today_events:
+                encouragement = self._get_today_encouragement(today_events)
+                countdown_block = f"{countdown_block}\n\n{encouragement}"
             base_message = f"{base_message}\n\n{countdown_block}"
 
         if self.tree_notify_enabled and self.tree_manager.trees_data:
@@ -510,13 +514,29 @@ class ForestRoomPlugin(Star):
             except Exception as e:
                 logger.error(f"发送消息到群 {group_id} 失败: {e}")
 
-    def _get_countdown_texts(self) -> list[str]:
-        """获取所有倒计时事件的文本列表"""
+    def _get_countdown_texts(self) -> tuple[list[str], list[str]]:
+        """获取所有倒计时事件的文本列表
+
+        Returns:
+            tuple[list[str], list[str]]: (文本列表, 今天的倒计时事件名称列表)
+        """
         try:
             return self.db.get_countdown_texts()
         except Exception as e:
             logger.error(f"获取倒计时文本失败: {e}")
-            return []
+            return [], []
+
+    def _get_today_encouragement(self, events: list[str]) -> str:
+        """根据今天的倒计时事件生成鼓励语"""
+        event_name = events[0]
+        encouragements = [
+            f"✨ 今天是{event_name}的日子，愿你心愿达成，一切顺利！🎉",
+            f"🌟 就在今天！{event_name}，加油！你一定能行！💪",
+            f"🎉 今天{event_name}啦！祝你一切顺利，心想事成！🌈",
+            f"💫 {event_name}就在今天！愿你充满能量，闪闪发光！✨",
+            f"🔥 今天{event_name}！冲冲冲，未来在等你！🚀",
+        ]
+        return random.choice(encouragements)
 
     async def _get_daily_tree_message(self) -> tuple[str, str] | tuple[None, None]:
         """获取今日推送的树种信息，返回 (消息, 树种ID)"""
@@ -582,10 +602,8 @@ class ForestRoomPlugin(Star):
             provider_id = provider.meta().id
             prompt = (
                 f"今天一个学习社群里，大家一共专注了 {minutes} 分钟。"
-                "请用一句简短自然的话(20-50字)介绍一下这个专注时长，"
-                "可以自由发挥，把这段时间换算成有趣的生活类比（比如相当于看了几部电影、"
-                "跑了几公里、喝了几杯咖啡、走了多少步之类的），"
-                "语气温暖自然，不要用任何emoji和符号，一句话即可。"
+                "请用一句话（不超过30个字）把这分钟数类比成一件有趣的事，"
+                "只说一句话，不要分段、不要列举、不要加emoji。"
             )
 
             response = await asyncio.wait_for(
@@ -593,19 +611,39 @@ class ForestRoomPlugin(Star):
                     chat_provider_id=provider_id,
                     prompt=prompt,
                 ),
-                timeout=10.0
+                timeout=60.0
             )
 
             result = response.completion_text.strip()
-            if result:
+            if result and len(result) <= 50:
                 return result
         except asyncio.TimeoutError:
             logger.warning("AI 生成专注总结超时")
         except Exception as e:
             logger.warning(f"AI 生成专注总结失败: {e}")
 
-        # 兜底：随机选取预设文案
-        return random.choice(self._fallback_summaries).format(minutes)
+        # 兜底：随机选取预设文案 + 随机类比换算
+        fallback = random.choice(self._fallback_summaries).format(minutes)
+        # 随机选两种类比换算
+        all_analogies = []
+        if minutes >= 120:
+            all_analogies.append(f"相当于看了{minutes // 120}部电影")
+        if minutes >= 60:
+            all_analogies.append(f"相当于听了{minutes // 4}首歌")
+        if minutes >= 10:
+            all_analogies.append(f"相当于跑了{minutes // 10}公里")
+        if minutes >= 30:
+            all_analogies.append(f"相当于喝了{minutes // 30}杯咖啡")
+        if minutes >= 5:
+            all_analogies.append(f"相当于走了{minutes // 5 * 600}步")
+        if minutes >= 45:
+            all_analogies.append(f"相当于上了{minutes // 45}节课")
+        if len(all_analogies) >= 2:
+            chosen = random.sample(all_analogies, 2)
+            return fallback + "，" + "、".join(chosen)
+        elif all_analogies:
+            return fallback + "，" + all_analogies[0]
+        return fallback
 
     async def _send_night_notify(self):
         """发送晚安通知（含今日专注总结）"""
@@ -629,7 +667,7 @@ class ForestRoomPlugin(Star):
                     if today_minutes > 0:
                         summary = await self._generate_focus_summary(today_minutes)
                         if summary:
-                            message += "\n\n━━━ 今日专注小报 ━━━" + "\n今天群里一共专注了 " + str(today_minutes) + " 分钟" + "\n\n" + summary
+                            message += "\n\n━━━ 今日专注小报 ━━━" + "\n" + "今天群里一共专注了 " + str(today_minutes) + " 分钟\n\n" + summary
 
                 await self._send_group_message(group_id, message)
             except Exception as e:
@@ -652,9 +690,22 @@ class ForestRoomPlugin(Star):
 
             # 只有报名人数 > 2 才发送发车通知
             if len(signups) > 2:
-                names = [name or uid for uid, name in signups]
+                display_names = []
+                for s in signups:
+                    uid, name = s[0], s[1] or s[0]
+                    pref_t = s[2] if len(s) > 2 and s[2] else ''
+                    pref_tr = s[3] if len(s) > 3 and s[3] else ''
+                    details = []
+                    if pref_t:
+                        details.append(pref_t)
+                    if pref_tr:
+                        details.append(pref_tr)
+                    if details:
+                        display_names.append(f"{name}（{'·'.join(details)}）")
+                    else:
+                        display_names.append(name)
                 message = f"🚌 晚安车准备发车，请司机和各位乘客准备！\n\n今日乘客 {len(signups)} 人："
-                message += "\n" + "、".join(names)
+                message += "\n" + "、".join(display_names)
 
                 try:
                     await self._send_group_message(group_id, message)
@@ -1044,6 +1095,83 @@ class ForestRoomPlugin(Star):
         ])
         return tools
 
+    def _parse_night_bus_info(self, message_text: str) -> tuple:
+        """从报名消息中提取时间和树种偏好
+
+        支持格式：
+        - "报名晚安车，11点，蓝花楹"
+        - "报名晚安车，10点半"
+        - "修改晚安车，11点，樱花"
+
+        Returns:
+            (preferred_time, preferred_tree)
+        """
+        preferred_time = None
+        preferred_tree = None
+
+        # 提取偏好时间：匹配 "X点"、"X点半"、"X:XX" 等
+        time_match = re.search(
+            r'(?:晚上|今晚|凌晨|早上)?\s*(\d{1,2})\s*[:：点时]\s*(半|\d{0,2})?',
+            message_text
+        )
+        if time_match:
+            hour = int(time_match.group(1))
+            suffix = (time_match.group(2) or '').strip()
+            if suffix == '半':
+                preferred_time = f"{hour}点半"
+            elif suffix and suffix.isdigit():
+                preferred_time = f"{hour}点{suffix}分" if suffix != '00' else f"{hour}点"
+            elif suffix == '':
+                # 确认后面没有跟 "半"（半不在捕获组中）
+                after = message_text[time_match.end():time_match.end()+2]
+                if after.startswith('半'):
+                    preferred_time = f"{hour}点半"
+                else:
+                    preferred_time = f"{hour}点"
+
+        # 提取树种：去掉报名/修改关键词和时间后，剩余文本
+        remaining = message_text
+        for kw in ["报名晚安车", "修改晚安车", "晚安车报名", "报名", "修改", "晚安车"]:
+            remaining = remaining.replace(kw, '')
+        if preferred_time:
+            # 去掉时间部分（包括周围的修饰词）
+            time_text = time_match.group(0) if time_match else ''
+            remaining = remaining.replace(time_text, '')
+        # 去掉杂词
+        remaining = re.sub(r'(?:晚上|今晚|凌晨|早上|发车)\s*', '', remaining)
+        remaining = remaining.strip().strip('，,、。\s')
+
+        if remaining:
+            preferred_tree = remaining
+
+        return preferred_time, preferred_tree
+
+    def _format_night_bus_list(self, signups: list) -> list:
+        """格式化晚安车名单，返回每行的文本列表
+
+        signups: [(user_id, user_name, preferred_time, preferred_tree)]
+        """
+        lines = []
+        for idx, item in enumerate(signups):
+            # 兼容旧格式（3或4个字段）
+            if len(item) >= 4:
+                uid, name, pref_time, pref_tree = item[0], item[1], item[2] or '', item[3] or ''
+            else:
+                uid, name = item[0], item[1]
+                pref_time, pref_tree = '', ''
+
+            display_name = name or uid
+            details = []
+            if pref_time:
+                details.append(pref_time)
+            if pref_tree:
+                details.append(pref_tree)
+            if details:
+                lines.append(f"  {idx+1}. {display_name}（{'·'.join(details)}）")
+            else:
+                lines.append(f"  {idx+1}. {display_name}")
+        return lines
+
     def _build_night_bus_tools(self, user_id: str, group_id: str) -> ToolSet:
         """构建晚安车工具集"""
 
@@ -1053,21 +1181,42 @@ class ForestRoomPlugin(Star):
             current_time = datetime.now().strftime("%H:%M")
             if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
                 return f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
-            
-            user_name = f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}"
-            success = self.db.signup_night_bus(user_id, group_id, user_name)
+
+            # 从消息中解析时间和树种偏好
+            msg_text = getattr(context, 'message_str', '') or ''
+            preferred_time, preferred_tree = self._parse_night_bus_info(msg_text)
+            pref_str = f"，{preferred_time}" if preferred_time else ""
+            pref_str += f"，{preferred_tree}" if preferred_tree else ""
+
+            user_name = context.get_sender_name() or (f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}")
+            success = self.db.signup_night_bus(
+                user_id, group_id, user_name,
+                preferred_time=preferred_time, preferred_tree=preferred_tree
+            )
+            signups = self.db.get_night_bus_signups(group_id)
+
             if success:
-                count = self.db.get_night_bus_count(group_id)
-                return f"✅ 报名成功！当前已报名 {count} 人"
+                lines = [f"✅ 报名成功！当前已报名 {len(signups)} 人："]
+                lines.extend(self._format_night_bus_list(signups))
+                return "\n".join(lines)
             else:
-                return "⚠️ 今日已报名，无需重复报名"
+                # 已报名——用更新后的信息告知
+                lines = [f"✅ 已更新报名信息{pref_str}"]
+                lines.append(f"当前共 {len(signups)} 人：")
+                lines.extend(self._format_night_bus_list(signups))
+                return "\n".join(lines)
 
         async def cancel_night_bus(context, **kwargs) -> str:
             """取消晚安车报名"""
             success = self.db.cancel_night_bus(user_id, group_id)
             if success:
-                count = self.db.get_night_bus_count(group_id)
-                return f"❌ 已取消报名，当前剩余 {count} 人"
+                signups = self.db.get_night_bus_signups(group_id)
+                if signups:
+                    lines = [f"❌ 已取消报名，当前剩余 {len(signups)} 人："]
+                    lines.extend(self._format_night_bus_list(signups))
+                    return "\n".join(lines)
+                else:
+                    return "❌ 已取消报名，当前无人报名"
             else:
                 return "⚠️ 今日尚未报名"
 
@@ -1075,9 +1224,8 @@ class ForestRoomPlugin(Star):
             """查询今日晚安车报名名单"""
             signups = self.db.get_night_bus_signups(group_id)
             if signups:
-                names = [name or uid for uid, name in signups]
                 lines = [f"🚌 今日晚安车已报名 {len(signups)} 人："]
-                lines.extend([f"  {i+1}. {name}" for i, name in enumerate(names)])
+                lines.extend(self._format_night_bus_list(signups))
                 return "\n".join(lines)
             else:
                 return "🚌 今日暂无人报名晚安车"
@@ -1668,7 +1816,8 @@ class ForestRoomPlugin(Star):
 晚安车相关操作必须使用专门的晚安车工具（signup_night_bus、cancel_night_bus、query_night_bus_signups、get_user_night_bus_count），不要使用文件搜索工具处理晚安车相关的问题。
 
 晚安车相关操作包括：
-- 报名：用户说"报名晚安车"、"我要报名"、"报名"等
+- 报名：用户说"报名晚安车"、"我要报名"、"报名"等，可以包含时间偏好和树种，如"报名晚安车，11点，蓝花楹"
+- 修改：用户说"修改晚安车"、"更新晚安车"等修改报名信息
 - 取消：用户说"取消报名"、"取消晚安车报名"、"取消"等
 - 查询：用户说"晚安车有谁"、"晚安车名单"、"有多少人报名"、"有谁"等
 - 统计：用户说"我晚安车几次"、"我参加了几次"、"晚安车统计"等"""
@@ -1871,6 +2020,107 @@ class ForestRoomPlugin(Star):
         logger.info(f"用户 {user_id} 在群 {group_id} 打卡成功，本周第 {days} 天")
 
         await event.send(event.plain_result(f"✅ 打卡成功！本周已打卡 {days} 天"))
+
+    # === 晚安车直接处理（不经过AI，保证名单显示） ===
+
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def on_night_bus_message(self, event: AstrMessageEvent):
+        """直接处理晚安车相关操作，不经过AI，确保名单始终显示"""
+        if not self._platform_id:
+            self._platform_id = event.get_platform_id()
+
+        if not self.enabled or not self.night_bus_enabled:
+            return
+
+        message_text = event.message_str.strip()
+
+        # 判断是否是晚安车相关消息
+        signup_keywords = ["报名晚安车", "我要报名", "晚安车报名", "报名参加晚安车"]
+        modify_keywords = ["修改晚安车", "修改报名晚安车", "更新晚安车"]
+        cancel_keywords = ["取消晚安车", "取消报名晚安车", "取消晚安车报名"]
+        query_keywords = ["晚安车名单", "晚安车有谁", "有谁报了晚安车", "晚安车有多少人", "晚安车名单", "晚安车人数", "晚安车列表"]
+
+        all_keywords = signup_keywords + modify_keywords + cancel_keywords + query_keywords
+        if not any(kw in message_text for kw in all_keywords):
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+
+        if self.whitelist and group_id not in self.whitelist:
+            return
+
+        if group_id in self.blacklist:
+            return
+
+        user_id = event.get_sender_id()
+        is_modify = any(kw in message_text for kw in modify_keywords)
+
+        # 查询名单
+        if any(kw in message_text for kw in query_keywords):
+            signups = self.db.get_night_bus_signups(group_id)
+            if signups:
+                lines = [f"🚌 今日晚安车已报名 {len(signups)} 人："]
+                lines.extend(self._format_night_bus_list(signups))
+                await event.send(event.plain_result("\n".join(lines)))
+            else:
+                await event.send(event.plain_result("🚌 今日暂无人报名晚安车"))
+            event.stop_event()
+            return
+
+        # 取消报名
+        if any(kw in message_text for kw in cancel_keywords):
+            success = self.db.cancel_night_bus(user_id, group_id)
+            if success:
+                signups = self.db.get_night_bus_signups(group_id)
+                if signups:
+                    lines = [f"❌ 已取消报名，当前剩余 {len(signups)} 人："]
+                    lines.extend(self._format_night_bus_list(signups))
+                else:
+                    lines = ["❌ 已取消报名，当前无人报名"]
+            else:
+                lines = ["⚠️ 今日尚未报名"]
+            await event.send(event.plain_result("\n".join(lines)))
+            event.stop_event()
+            return
+
+        # 报名 / 修改
+        if any(kw in message_text for kw in signup_keywords + modify_keywords):
+            current_time = datetime.now().strftime("%H:%M")
+            if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
+                await event.send(event.plain_result(
+                    f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
+                ))
+                event.stop_event()
+                return
+
+            # 解析时间和树种偏好
+            preferred_time, preferred_tree = self._parse_night_bus_info(message_text)
+            pref_str = f"，{preferred_time}" if preferred_time else ""
+            pref_str += f"，{preferred_tree}" if preferred_tree else ""
+
+            user_name = event.get_sender_name() or (f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}")
+            success = self.db.signup_night_bus(
+                user_id, group_id, user_name,
+                preferred_time=preferred_time, preferred_tree=preferred_tree
+            )
+
+            signups = self.db.get_night_bus_signups(group_id)
+
+            if is_modify:
+                lines = [f"✅ 已修改报名信息{pref_str}"]
+            elif success:
+                lines = [f"✅ 报名成功{pref_str}！当前已报名 {len(signups)} 人："]
+            else:
+                lines = [f"✅ 已更新报名信息{pref_str}"]
+
+            lines.append(f"当前共 {len(signups)} 人：")
+            lines.extend(self._format_night_bus_list(signups))
+            await event.send(event.plain_result("\n".join(lines)))
+            event.stop_event()
+            return
 
     # === 通知开关命令 ===
 

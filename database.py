@@ -66,6 +66,16 @@ class ForestDB:
             conn.execute("""CREATE INDEX IF NOT EXISTS idx_night_bus_lookup
                 ON night_bus_signups(group_id, signup_date)""")
 
+            # 兼容旧表：添加 prefered_time 和 prefered_tree 字段（已有则跳过）
+            try:
+                conn.execute("ALTER TABLE night_bus_signups ADD COLUMN preferred_time TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE night_bus_signups ADD COLUMN preferred_tree TEXT")
+            except sqlite3.OperationalError:
+                pass
+
             # 房间密钥映射表（用于撤回同步）
             conn.execute("""CREATE TABLE IF NOT EXISTS room_key_mappings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -404,17 +414,28 @@ class ForestDB:
 
     # === 晚安车报名相关 ===
 
-    def signup_night_bus(self, user_id: str, group_id: str, user_name: str = None) -> bool:
-        """报名晚安车，返回是否成功（False 表示已报名）"""
+    def signup_night_bus(
+        self, user_id: str, group_id: str, user_name: str = None,
+        preferred_time: str = None, preferred_tree: str = None
+    ) -> bool:
+        """报名晚安车，返回是否成功（False 表示已报名）
+        每次报名都会更新用户昵称和时间/树种偏好
+        """
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
-                    """INSERT OR IGNORE INTO night_bus_signups
-                       (user_id, group_id, user_name, signup_time, signup_date)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (user_id, group_id, user_name, now, today)
+                    """INSERT INTO night_bus_signups
+                       (user_id, group_id, user_name, signup_time, signup_date, preferred_time, preferred_tree)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(user_id, group_id, signup_date)
+                       DO UPDATE SET
+                         user_name = excluded.user_name,
+                         signup_time = excluded.signup_time,
+                         preferred_time = excluded.preferred_time,
+                         preferred_tree = excluded.preferred_tree""",
+                    (user_id, group_id, user_name, now, today, preferred_time, preferred_tree)
                 )
                 conn.commit()
                 return cursor.rowcount > 0
@@ -438,13 +459,16 @@ class ForestDB:
             logger.error(f"取消晚安车报名失败: {e}")
             return False
 
-    def get_night_bus_signups(self, group_id: str) -> List[Tuple[str, str]]:
-        """获取今日晚安车报名列表，返回 [(user_id, user_name)]"""
+    def get_night_bus_signups(
+        self, group_id: str
+    ) -> List[Tuple[str, str, str, str]]:
+        """获取今日晚安车报名列表，返回 [(user_id, user_name, preferred_time, preferred_tree)]"""
         today = datetime.now().strftime("%Y-%m-%d")
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
-                    """SELECT user_id, user_name FROM night_bus_signups
+                    """SELECT user_id, user_name, preferred_time, preferred_tree
+                       FROM night_bus_signups
                        WHERE group_id = ? AND signup_date = ?
                        ORDER BY signup_time ASC""",
                     (group_id, today)
@@ -813,13 +837,18 @@ class ForestDB:
             logger.error(f"查询倒计时事件失败: {e}")
             return []
 
-    def get_countdown_texts(self) -> list[str]:
-        """获取所有倒计时事件的计算结果文本列表"""
+    def get_countdown_texts(self) -> tuple[list[str], list[str]]:
+        """获取所有倒计时事件的计算结果文本列表
+
+        Returns:
+            tuple[list[str], list[str]]: (文本列表, 今天的倒计时事件名称列表)
+        """
         events = self.list_countdown_events()
         if not events:
-            return []
+            return [], []
 
         texts = []
+        today_events = []
         now = datetime.now()
         current_year = now.year
 
@@ -847,13 +876,14 @@ class ForestDB:
                 days = (event_date.date() - now.date()).days
 
                 if days == 0:
-                    texts.append(f"🎯 {name}：就是今天！")
+                    texts.append(f"🎯 今天{name}！")
+                    today_events.append(name)
                 elif days == 1:
-                    texts.append(f"🎯 {name}：明天！加油！💪")
+                    texts.append(f"🎯 距离{name}还有1天（明天！加油！💪)")
                 else:
-                    texts.append(f"🎯 {name}：{days} 天")
+                    texts.append(f"🎯 距离{name}还有{days}天")
             except (ValueError, IndexError):
                 logger.warning(f"解析倒计时日期失败: {target_date}")
                 continue
 
-        return texts
+        return texts, today_events
