@@ -701,7 +701,7 @@ class ForestRoomPlugin(Star):
                     if pref_tr:
                         details.append(pref_tr)
                     if details:
-                        display_names.append(f"{name}（{'·'.join(details)}）")
+                        display_names.append(f"{name}（{'，'.join(details)}）")
                     else:
                         display_names.append(name)
                 message = f"🚌 晚安车准备发车，请司机和各位乘客准备！\n\n今日乘客 {len(signups)} 人："
@@ -1173,7 +1173,7 @@ class ForestRoomPlugin(Star):
             if pref_tree:
                 details.append(pref_tree)
             if details:
-                lines.append(f"  {idx+1}. {display_name}（{'·'.join(details)}）")
+                lines.append(f"  {idx+1}. {display_name}（{'，'.join(details)}）")
             else:
                 lines.append(f"  {idx+1}. {display_name}")
         return lines
