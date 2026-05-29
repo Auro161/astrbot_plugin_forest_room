@@ -754,6 +754,59 @@ class ForestDB:
             logger.error(f"查询今日专注总时长失败: {e}")
             return 0
 
+    def get_user_today_focus_summary(self, user_id: str, group_id: str = None) -> dict:
+        """
+        获取用户今日专注总结
+        返回: {
+            "total_sessions": 今日专注次数,
+            "total_minutes": 今日总时长(分钟),
+            "trees": [今日种过的树名列表],
+            "has_data": 是否有数据
+        }
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conditions = ["user_id = ?", "focused_at >= ?"]
+                params = [user_id, today]
+                if group_id:
+                    conditions.append("group_id = ?")
+                    params.append(group_id)
+
+                where_clause = " AND ".join(conditions)
+
+                # 总次数和总时长
+                cursor = conn.execute(
+                    f"""SELECT COUNT(*), COALESCE(SUM(duration_minutes), 0)
+                       FROM focus_sessions WHERE {where_clause}""",
+                    params
+                )
+                total_sessions, total_minutes = cursor.fetchone()
+
+                # 今日种的树（去重）
+                cursor = conn.execute(
+                    f"""SELECT DISTINCT COALESCE(tree_name, tree_name_en) as tree
+                       FROM focus_sessions
+                       WHERE {where_clause} AND (tree_name IS NOT NULL OR tree_name_en IS NOT NULL)""",
+                    params
+                )
+                trees = [row[0] for row in cursor.fetchall() if row[0]]
+
+            return {
+                "total_sessions": total_sessions,
+                "total_minutes": total_minutes,
+                "trees": trees,
+                "has_data": total_sessions > 0,
+            }
+        except sqlite3.Error as e:
+            logger.error(f"查询今日专注总结失败: {e}")
+            return {
+                "total_sessions": 0,
+                "total_minutes": 0,
+                "trees": [],
+                "has_data": False,
+            }
+
     def delete_focus_session_by_msg_id(self, group_id: str, original_msg_id: int) -> bool:
         """根据消息ID删除对应的专注记录（消息撤回时使用）"""
         try:

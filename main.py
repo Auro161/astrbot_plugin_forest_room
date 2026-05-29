@@ -891,6 +891,26 @@ class ForestRoomPlugin(Star):
                 return "本周全勤，没有缺打卡"
             return f"本周未打卡日期：{', '.join(missed)}"
 
+        async def get_user_today_focus(context, **kwargs) -> str:
+            """查询用户今日专注成果（种了几次树、总时长、种了什么树）"""
+            summary = self.db.get_user_today_focus_summary(user_id, group_id)
+            if not summary["has_data"]:
+                return "今日暂无专注记录，快去种树吧！"
+
+            minutes = summary["total_minutes"]
+            hours_part = minutes // 60
+            mins_part = minutes % 60
+            if hours_part > 0:
+                time_str = f"{hours_part}小时{mins_part}分钟" if mins_part > 0 else f"{hours_part}小时"
+            else:
+                time_str = f"{mins_part}分钟"
+
+            result = f"今日专注{summary['total_sessions']}次，共{time_str}"
+            if summary["trees"]:
+                trees_str = "、".join(summary["trees"])
+                result += f"，种了：{trees_str}"
+            return result
+
         tools = ToolSet([
             FunctionTool(
                 name="check_today_checkin",
@@ -909,6 +929,12 @@ class ForestRoomPlugin(Star):
                 parameters={"type": "object", "properties": {}},
                 description="查询用户本周哪些天没有打卡",
                 handler=get_missed_checkin_days,
+            ),
+            FunctionTool(
+                name="get_user_today_focus",
+                parameters={"type": "object", "properties": {}},
+                description="查询用户今日专注成果（种了几次树、总时长、种了什么树），当用户炫耀种树成果、求夸奖、求鼓励时调用",
+                handler=get_user_today_focus,
             ),
         ])
         return tools
@@ -1095,63 +1121,6 @@ class ForestRoomPlugin(Star):
         ])
         return tools
 
-    def _parse_night_bus_info(self, message_text: str) -> tuple:
-        """从报名消息中提取时间和树种偏好
-
-        支持格式：
-        - "报名晚安车，11点，蓝花楹"
-        - "报名晚安车，10点半"
-        - "修改晚安车，11点，樱花"
-
-        Returns:
-            (preferred_time, preferred_tree)
-        """
-        preferred_time = None
-        preferred_tree = None
-
-        # 提取偏好时间：匹配 "X点"、"X点半"、"X:XX" 等
-        # 先处理 "11点的" → "11点"
-        cleaned = re.sub(r'(\d)\s*的\s*点', r'\1点', message_text)
-        cleaned = re.sub(r'(\d)\s*的\s*:(\d)', r'\1:\2', cleaned)
-
-        time_match = re.search(
-            r'(?:晚上|今晚|凌晨|早上)?\s*(\d{1,2})\s*[:：点时]\s*(半|\d{0,2})?',
-            cleaned
-        )
-        if time_match:
-            hour = int(time_match.group(1))
-            suffix = (time_match.group(2) or '').strip()
-            if suffix == '半':
-                preferred_time = f"{hour}点半"
-            elif suffix and suffix.isdigit():
-                preferred_time = f"{hour}点{suffix}分" if suffix != '00' else f"{hour}点"
-            elif suffix == '':
-                after = cleaned[time_match.end():time_match.end()+2]
-                if after.startswith('半'):
-                    preferred_time = f"{hour}点半"
-                else:
-                    preferred_time = f"{hour}点"
-
-        # 提取树种：去掉报名/修改关键词和时间后，剩余文本
-        remaining = message_text
-        for kw in ["报名晚安车", "修改晚安车", "晚安车报名", "报名", "修改", "晚安车"]:
-            remaining = remaining.replace(kw, '')
-        if preferred_time:
-            # 去掉时间部分（包括周围的修饰词）
-            time_text = time_match.group(0) if time_match else ''
-            remaining = remaining.replace(time_text, '')
-        # 去掉杂词
-        remaining = re.sub(r'(?:晚上|今晚|凌晨|早上|发车|的)\s*', '', remaining)
-        remaining = remaining.strip().strip('，,、。·\s')
-        # 如果剩余文本包含"的"，取"的"后面的部分
-        if '的' in remaining:
-            remaining = remaining.split('的')[-1].strip()
-
-        if remaining:
-            preferred_tree = remaining
-
-        return preferred_time, preferred_tree
-
     def _format_night_bus_list(self, signups: list) -> list:
         """格式化晚安车名单，返回每行的文本列表
 
@@ -1181,16 +1150,13 @@ class ForestRoomPlugin(Star):
     def _build_night_bus_tools(self, user_id: str, group_id: str) -> ToolSet:
         """构建晚安车工具集"""
 
-        async def signup_night_bus(context, **kwargs) -> str:
+        async def signup_night_bus(context, preferred_time: str = None, preferred_tree: str = None, **kwargs) -> str:
             """报名晚安车"""
             # 检查时间段
             current_time = datetime.now().strftime("%H:%M")
             if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
                 return f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
 
-            # 从消息中解析时间和树种偏好
-            msg_text = getattr(context, 'message_str', '') or ''
-            preferred_time, preferred_tree = self._parse_night_bus_info(msg_text)
             pref_str = f"，{preferred_time}" if preferred_time else ""
             pref_str += f"，{preferred_tree}" if preferred_tree else ""
 
@@ -1202,7 +1168,7 @@ class ForestRoomPlugin(Star):
             signups = self.db.get_night_bus_signups(group_id)
 
             if success:
-                lines = [f"✅ 报名成功！当前已报名 {len(signups)} 人："]
+                lines = [f"✅ 报名成功{pref_str}！当前已报名 {len(signups)} 人："]
                 lines.extend(self._format_night_bus_list(signups))
                 return "\n".join(lines)
             else:
@@ -1244,8 +1210,14 @@ class ForestRoomPlugin(Star):
         tools = ToolSet([
             FunctionTool(
                 name="signup_night_bus",
-                parameters={"type": "object", "properties": {}},
-                description="报名参加晚安车",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "preferred_time": {"type": "string", "description": "偏好的发车时间，如'11点'、'10点半'、'10点30分'。没有时间偏好时不用传"},
+                        "preferred_tree": {"type": "string", "description": "偏好的树种，如'蓝花楹'、'樱花'。没有树种偏好时不用传"}
+                    }
+                },
+                description="报名参加晚安车，支持指定时间和树种偏好",
                 handler=signup_night_bus,
             ),
             FunctionTool(
@@ -1813,20 +1785,33 @@ class ForestRoomPlugin(Star):
         # 获取默认人设的系统提示词
         persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
         system_prompt = persona.get("prompt", "") if persona else ""
-        system_prompt += """\n\n你可以使用工具查询用户的打卡记录、Forest 树种信息和晚安车报名情况。
+        system_prompt += """\n\n你可以使用工具查询用户的打卡记录、Forest 专注成果、树种信息和晚安车报名情况。
 
-当用户询问打卡、树种或晚安车相关问题时，请调用相应的工具。
+当用户询问打卡、专注、树种或晚安车相关问题时，请调用相应的工具。
 
 重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。
 
+当用户@你并分享种树成果、专注时长、求夸奖、求鼓励时，使用 get_user_today_focus 工具查询今日专注数据，然后用温暖可爱的语气根据数据夸奖用户：
+- 总时长越长（如120分钟以上）：夸得越夸张，越热情
+- 种的树多种类丰富：夸效率高、多样化
+- 如果有打卡数据也一起展示
+- 如果今天还没有专注记录，用温柔的语气鼓励用户去种树
+
 晚安车相关操作必须使用专门的晚安车工具（signup_night_bus、cancel_night_bus、query_night_bus_signups、get_user_night_bus_count），不要使用文件搜索工具处理晚安车相关的问题。
 
+signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参数，由你从用户消息中提取。用户说晚安车+时间就是报名意图，不一定需要"报名"关键词。
+
+示例：
+- 用户说"晚安车11点"或"晚安车 10点半" → 你的任务是理解时间和树种，调用 signup_night_bus(preferred_time="11点") 或 signup_night_bus(preferred_time="10点半")
+- 用户说"报名晚安车，11点，蓝花楹" → signup_night_bus(preferred_time="11点", preferred_tree="蓝花楹")
+- 不要用文件搜索工具处理，不要从消息原文中手动拼接参数，直接理解语义后传给工具
+
 晚安车相关操作包括：
-- 报名：用户说"报名晚安车"、"我要报名"、"报名"等，可以包含时间偏好和树种，如"报名晚安车，11点，蓝花楹"
-- 修改：用户说"修改晚安车"、"更新晚安车"等修改报名信息
-- 取消：用户说"取消报名"、"取消晚安车报名"、"取消"等
-- 查询：用户说"晚安车有谁"、"晚安车名单"、"有多少人报名"、"有谁"等
-- 统计：用户说"我晚安车几次"、"我参加了几次"、"晚安车统计"等"""
+- 报名：用户说"晚安车XX点"、"报名晚安车"、"我要报名"等，包含时间偏好和/或树种
+- 修改：用户说"修改晚安车"等
+- 取消：用户说"取消晚安车"、"取消报名"等
+- 查询：用户说"晚安车有谁"、"晚安车名单"等
+- 统计：用户说"我晚安车几次"等"""
 
         # === 检测树种推荐意图，提前预选树种确保附带图片 ===
         tree_recommend_keywords = [
@@ -2026,115 +2011,6 @@ class ForestRoomPlugin(Star):
         logger.info(f"用户 {user_id} 在群 {group_id} 打卡成功，本周第 {days} 天")
 
         await event.send(event.plain_result(f"✅ 打卡成功！本周已打卡 {days} 天"))
-
-    # === 晚安车直接处理（不经过AI，保证名单显示） ===
-
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
-    async def on_night_bus_message(self, event: AstrMessageEvent):
-        """直接处理晚安车相关操作，不经过AI，确保名单始终显示"""
-        if not self._platform_id:
-            self._platform_id = event.get_platform_id()
-
-        if not self.enabled or not self.night_bus_enabled:
-            return
-
-        message_text = event.message_str.strip()
-
-        # 判断是否是晚安车相关消息（支持多种格式，包括标点分隔）
-        has_bus_kw = '晚安车' in message_text or '晚安' in message_text
-        if not has_bus_kw:
-            return
-
-        # 更灵活的关键词检测
-        msg_clean = message_text.replace('，', ',').replace(' ', '').replace('\s', '')
-        is_signup = any(kw in msg_clean for kw in ["报名晚安车", "我要报名", "晚安车报名", "报名参加晚安车", "报名晚安"])
-        is_signup = is_signup or ('报名' in msg_clean and '晚安' in msg_clean)
-        is_modify = any(kw in msg_clean for kw in ["修改晚安车", "修改报名晚安车", "更新晚安车", "修改晚安"])
-        is_modify = is_modify or ('修改' in msg_clean and '晚安' in msg_clean)
-        is_cancel = any(kw in msg_clean for kw in ["取消晚安车", "取消报名晚安车", "取消晚安车报名"])
-        is_cancel = is_cancel or ('取消' in msg_clean and '晚安' in msg_clean)
-        is_query = any(kw in msg_clean for kw in ["晚安车名单", "晚安车有谁", "有谁报了晚安车", "晚安车有多少人", "晚安车人数", "晚安车列表", "晚安车查询"])
-        is_query = is_query or any(kw in msg_clean for kw in ["名单", "有谁", "多少人"])
-
-        if not (is_signup or is_modify or is_cancel or is_query):
-            return
-
-        group_id = event.get_group_id()
-        if not group_id:
-            return
-
-        if self.whitelist and group_id not in self.whitelist:
-            return
-
-        if group_id in self.blacklist:
-            return
-
-        user_id = event.get_sender_id()
-
-        # 查询名单
-        if is_query:
-            signups = self.db.get_night_bus_signups(group_id)
-            if signups:
-                lines = [f"🚌 今日晚安车已报名 {len(signups)} 人："]
-                lines.extend(self._format_night_bus_list(signups))
-                await event.send(event.plain_result("\n".join(lines)))
-            else:
-                await event.send(event.plain_result("🚌 今日暂无人报名晚安车"))
-            event.stop_event()
-            return
-
-        # 取消报名
-        if is_cancel:
-            success = self.db.cancel_night_bus(user_id, group_id)
-            if success:
-                signups = self.db.get_night_bus_signups(group_id)
-                if signups:
-                    lines = [f"❌ 已取消报名，当前剩余 {len(signups)} 人："]
-                    lines.extend(self._format_night_bus_list(signups))
-                else:
-                    lines = ["❌ 已取消报名，当前无人报名"]
-            else:
-                lines = ["⚠️ 今日尚未报名"]
-            await event.send(event.plain_result("\n".join(lines)))
-            event.stop_event()
-            return
-
-        # 报名 / 修改
-        if is_signup or is_modify:
-            current_time = datetime.now().strftime("%H:%M")
-            if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
-                await event.send(event.plain_result(
-                    f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
-                ))
-                event.stop_event()
-                return
-
-            # 解析时间和树种偏好
-            preferred_time, preferred_tree = self._parse_night_bus_info(message_text)
-            pref_str = f"，{preferred_time}" if preferred_time else ""
-            pref_str += f"，{preferred_tree}" if preferred_tree else ""
-
-            user_name = event.get_sender_name() or (f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}")
-            success = self.db.signup_night_bus(
-                user_id, group_id, user_name,
-                preferred_time=preferred_time, preferred_tree=preferred_tree
-            )
-
-            signups = self.db.get_night_bus_signups(group_id)
-
-            if is_modify:
-                lines = [f"✅ 已修改报名信息{pref_str}"]
-            elif success:
-                lines = [f"✅ 报名成功{pref_str}！当前已报名 {len(signups)} 人："]
-            else:
-                lines = [f"✅ 已更新报名信息{pref_str}"]
-
-            lines.append(f"当前共 {len(signups)} 人：")
-            lines.extend(self._format_night_bus_list(signups))
-            await event.send(event.plain_result("\n".join(lines)))
-            event.stop_event()
-            return
 
     # === 通知开关命令 ===
 
