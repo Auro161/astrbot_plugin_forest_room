@@ -133,6 +133,10 @@ class ForestRoomPlugin(Star):
         self._ai_queried_tree_ids: list[str] = []
         self._ai_tree_lock = asyncio.Lock()  # AI 树种查询缓存锁
 
+        # === 晚安车跳过 AI 回复标记 ===
+        self._night_bus_skip_reply: bool = False
+        self._night_bus_skip_reply_lock = asyncio.Lock()
+
         # Forest 房间密钥提取模式（优先级：链接 > 英文文本 > 中文文本）
         self.key_patterns = {
             'link': re.compile(r"forestapp\.cc/join-room\?token=([A-Z0-9]+)", re.IGNORECASE),
@@ -273,6 +277,8 @@ class ForestRoomPlugin(Star):
         self.keyword_rate_limit_count = self._get_config("keyword_rate_limit_count", 5)
         self.keyword_timestamps: defaultdict[str, deque] = defaultdict(deque)
         self._keyword_rate_limit_lock = asyncio.Lock()  # 关键词限流数据锁
+        self.greeting_timestamps: defaultdict[str, deque] = defaultdict(deque)
+        self._greeting_rate_limit_lock = asyncio.Lock()  # 问候限流数据锁（与关键词分离，避免被关键词高频消息影响）
 
         # === 固定回复配置 ===
         self.fixed_reply_enabled = self._get_config("fixed_reply_enabled", True)
@@ -793,6 +799,25 @@ class ForestRoomPlugin(Star):
             timestamps.append(now)
             return True
 
+    async def _check_greeting_rate_limit(self, group_id: str) -> bool:
+        """检查问候是否触发限流（与关键词限流分离）"""
+        if not self.keyword_rate_limit_enabled:
+            return True
+
+        async with self._greeting_rate_limit_lock:
+            now = time.time()
+            timestamps = self.greeting_timestamps[group_id]
+
+            while timestamps and timestamps[0] < now - self.keyword_rate_limit_window:
+                timestamps.popleft()
+
+            if len(timestamps) >= self.keyword_rate_limit_count:
+                logger.debug(f"群 {group_id} 问候触发限流，当前计数: {len(timestamps)}")
+                return False
+
+            timestamps.append(now)
+            return True
+
     def _parse_time(self, time_str: str) -> int:
         """
         解析时间字符串为分钟数
@@ -1170,27 +1195,53 @@ class ForestRoomPlugin(Star):
             if success:
                 lines = [f"✅ 报名成功{pref_str}！当前已报名 {len(signups)} 人："]
                 lines.extend(self._format_night_bus_list(signups))
-                return "\n".join(lines)
             else:
-                # 已报名——用更新后的信息告知
                 lines = [f"✅ 已更新报名信息{pref_str}"]
                 lines.append(f"当前共 {len(signups)} 人：")
                 lines.extend(self._format_night_bus_list(signups))
-                return "\n".join(lines)
+
+            msg = "\n".join(lines)
+            async with self._night_bus_skip_reply_lock:
+                self._night_bus_skip_reply = True
+            try:
+                if hasattr(context, 'bot'):
+                    await context.bot.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=msg
+                    )
+                    return "[已发送报名成功消息]"
+            except Exception as e:
+                logger.error(f"工具发送晚安车消息失败: {e}")
+            return msg
 
         async def cancel_night_bus(context, **kwargs) -> str:
             """取消晚安车报名"""
             success = self.db.cancel_night_bus(user_id, group_id)
+            signups = self.db.get_night_bus_signups(group_id)
             if success:
-                signups = self.db.get_night_bus_signups(group_id)
                 if signups:
                     lines = [f"❌ 已取消报名，当前剩余 {len(signups)} 人："]
                     lines.extend(self._format_night_bus_list(signups))
-                    return "\n".join(lines)
                 else:
-                    return "❌ 已取消报名，当前无人报名"
+                    lines = ["❌ 已取消报名，当前无人报名"]
             else:
-                return "⚠️ 今日尚未报名"
+                lines = ["⚠️ 今日尚未报名"]
+
+            msg = "\n".join(lines)
+            async with self._night_bus_skip_reply_lock:
+                self._night_bus_skip_reply = True
+            try:
+                if hasattr(context, 'bot'):
+                    await context.bot.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=msg
+                    )
+                    return "[已发送取消报名消息]"
+            except Exception as e:
+                logger.error(f"工具发送取消晚安车消息失败: {e}")
+            return msg
 
         async def query_night_bus_signups(context, **kwargs) -> str:
             """查询今日晚安车报名名单"""
@@ -1198,9 +1249,23 @@ class ForestRoomPlugin(Star):
             if signups:
                 lines = [f"🚌 今日晚安车已报名 {len(signups)} 人："]
                 lines.extend(self._format_night_bus_list(signups))
-                return "\n".join(lines)
             else:
-                return "🚌 今日暂无人报名晚安车"
+                lines = ["🚌 今日暂无人报名晚安车"]
+
+            msg = "\n".join(lines)
+            async with self._night_bus_skip_reply_lock:
+                self._night_bus_skip_reply = True
+            try:
+                if hasattr(context, 'bot'):
+                    await context.bot.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=msg
+                    )
+                    return "[已发送晚安车名单]"
+            except Exception as e:
+                logger.error(f"工具发送晚安车名单失败: {e}")
+            return msg
 
         async def get_user_night_bus_count(context, **kwargs) -> str:
             """查询个人累计参加晚安车次数"""
@@ -1667,7 +1732,10 @@ class ForestRoomPlugin(Star):
         if not self._platform_id:
             self._platform_id = event.get_platform_id()
 
+        logger.debug(f" 被触发! group_id={event.get_group_id()}, msg={event.message_str}")
+
         if not self.enabled or not self.greeting_reply_enabled:
+            logger.debug(f" 未启用: enabled={self.enabled}, greeting_reply_enabled={self.greeting_reply_enabled}")
             return
 
         message_text = event.message_str.strip()
@@ -1677,14 +1745,16 @@ class ForestRoomPlugin(Star):
 
         # 白名单检查
         if self.whitelist and group_id not in self.whitelist:
+            logger.debug(f" 群 {group_id} 不在白名单")
             return
 
         # 黑名单检查
         if group_id in self.blacklist:
             return
 
-        # 限流检查（复用关键词限流）
-        if not await self._check_keyword_rate_limit(group_id):
+        # 限流检查（使用独立的问候限流，不受关键词高频消息影响）
+        if not await self._check_greeting_rate_limit(group_id):
+            logger.debug(f" 群 {group_id} 被限流")
             return
 
         current_time = datetime.now().strftime("%H:%M")
@@ -1714,14 +1784,23 @@ class ForestRoomPlugin(Star):
         if reply is None and "晚安车" not in message_text:
             for kw in night_keywords:
                 if kw in message_text:
+                    logger.debug(f" 匹配关键词 {kw}，当前时间 {current_time}，时间范围 {self.night_greeting_start}-{self.night_greeting_end}")
                     if self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
                         if self.night_greeting_replies:
                             reply = random.choice(self.night_greeting_replies)
                             logger.info(f"检测到晚安关键词: {kw}")
+                        else:
+                            logger.debug(f" night_greeting_replies 为空")
+                    else:
+                        logger.debug(f" 时间范围不匹配")
                     break
 
         if reply:
+            logger.debug(f" 发送回复: {reply}")
             yield event.plain_result(reply)
+        else:
+            logger.debug(f" 未生成回复")
+
 
     # === 关键词唤起 AI 回复 ===
 
@@ -1763,6 +1842,10 @@ class ForestRoomPlugin(Star):
         if not await self._check_keyword_rate_limit(group_id):
             return
 
+        # 重置晚安车跳过 AI 回复标记
+        async with self._night_bus_skip_reply_lock:
+            self._night_bus_skip_reply = False
+
         # 获取用户信息
         user_id = event.get_sender_id()
 
@@ -1799,16 +1882,17 @@ class ForestRoomPlugin(Star):
 
 晚安车相关操作必须使用专门的晚安车工具（signup_night_bus、cancel_night_bus、query_night_bus_signups、get_user_night_bus_count），不要使用文件搜索工具处理晚安车相关的问题。
 
+重要：晚安车工具会自己发送报名成功/取消/名单消息到群里，你不需要再额外回复任何晚安车相关的内容给用户。工具返回"[已发送xxx消息]"代表消息已发出。
+
 signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参数，由你从用户消息中提取。用户说晚安车+时间就是报名意图，不一定需要"报名"关键词。
 
 示例：
-- 用户说"晚安车11点"或"晚安车 10点半" → 你的任务是理解时间和树种，调用 signup_night_bus(preferred_time="11点") 或 signup_night_bus(preferred_time="10点半")
+- 用户说"晚安车11点"或"晚安车 10点半" → signup_night_bus(preferred_time="11点") 或 signup_night_bus(preferred_time="10点半")
 - 用户说"报名晚安车，11点，蓝花楹" → signup_night_bus(preferred_time="11点", preferred_tree="蓝花楹")
 - 不要用文件搜索工具处理，不要从消息原文中手动拼接参数，直接理解语义后传给工具
 
 晚安车相关操作包括：
-- 报名：用户说"晚安车XX点"、"报名晚安车"、"我要报名"等，包含时间偏好和/或树种
-- 修改：用户说"修改晚安车"等
+- 报名：用户说"晚安车XX点"、"报名晚安车"、"我要报名"等
 - 取消：用户说"取消晚安车"、"取消报名"等
 - 查询：用户说"晚安车有谁"、"晚安车名单"等
 - 统计：用户说"我晚安车几次"等"""
@@ -1876,10 +1960,24 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
                     if image_path and image_path.exists():
                         components.append(Image(file=str(image_path)))
 
+            # 晚安车相关操作由工具直接发送消息，跳过 AI 回复
+            async with self._night_bus_skip_reply_lock:
+                need_skip = self._night_bus_skip_reply
+                self._night_bus_skip_reply = False  # 重置标记
+
+            if need_skip:
+                logger.info("晚安车操作已由工具直接发送，跳过 AI 回复")
+                return
+
             yield event.chain_result(components)
 
         except Exception as e:
             logger.error(f"AI 回复失败: {e}")
+            # 晚安车相关操作已由工具发送，出错时不额外回复
+            async with self._night_bus_skip_reply_lock:
+                if self._night_bus_skip_reply:
+                    self._night_bus_skip_reply = False
+                    return
             yield event.plain_result("抱歉，处理您的请求时出现了问题。")
 
 
