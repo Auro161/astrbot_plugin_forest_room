@@ -597,71 +597,21 @@ class ForestRoomPlugin(Star):
             return message, tree_id
 
     async def _generate_focus_summary(self, minutes: int) -> str:
-        """生成今日专注总结：1句点睛类比 + 3个换算类比"""
+        """生成今日专注总结：3个类比，让大家感受到共同专注的时长能做什么"""
         if minutes <= 0:
             return ""
 
-        # 先构建类比库
-        all_analogies = []
-        if minutes >= 120:
-            all_analogies.append(f"看了{minutes // 120}部电影")
-            all_analogies.append(f"看完一部{minutes}分钟超长纪录片")
-        if minutes >= 60:
-            all_analogies.append(f"听了{minutes // 4}首歌")
-            all_analogies.append(f"听完{minutes // 50}张音乐专辑")
-        if minutes >= 10:
-            all_analogies.append(f"跑了{minutes // 10}公里")
-            all_analogies.append(f"刷了{minutes // 2}条短视频")
-        if minutes >= 30:
-            all_analogies.append(f"喝了{minutes // 30}杯咖啡")
-            all_analogies.append(f"做了{minutes // 30}道菜的大餐")
-        if minutes >= 5:
-            all_analogies.append(f"走了{minutes // 5 * 600}步")
-            all_analogies.append(f"打了{minutes // 90}局羽毛球")
-        if minutes >= 45:
-            all_analogies.append(f"上了{minutes // 45}节课")
-            all_analogies.append(f"读了{minutes // 60}章小说")
-        if minutes >= 180:
-            all_analogies.append(f"通关了{minutes // 180}小时游戏")
-            all_analogies.append(f"拼完{minutes // 60}片拼图")
-        # 新增类比，增加多样性
-        if minutes >= 0:
-            all_analogies.append(f"相当于专注了{minutes}分钟的心流之旅")
-        if minutes >= 15:
-            all_analogies.append(f"听完{minutes // 15}张音乐专辑")
-        if minutes >= 20:
-            all_analogies.append(f"写了{minutes // 20}页学习笔记")
-        if minutes >= 25:
-            all_analogies.append(f"做完{minutes // 25}组腹肌训练")
-        if minutes >= 60:
-            all_analogies.append(f"从上海高铁到了南京")
-            all_analogies.append(f"享受了一顿{minutes // 60}小时的慢餐")
-            all_analogies.append(f"看完{minutes // 60}集30分钟短剧")
-        if minutes >= 90:
-            all_analogies.append(f"认真专注了{minutes // 90}堂课的时间")
-
-        def _pick_analogies(count: int = 3) -> list:
-            """从类比库中选 count 个，避免连续重复"""
-            candidates = [a for a in all_analogies if a not in self._last_fallback_choices]
-            if len(candidates) < count:
-                candidates = all_analogies
-            if len(candidates) >= count:
-                chosen = random.sample(candidates, count)
-            else:
-                chosen = candidates[:]
-            self._last_fallback_choices = chosen[:]
-            return chosen
-
-        # 先尝试 AI 生成点睛句
-        ai_summary = None
+        # 先尝试 AI 一口气生成 3 个类比
         try:
             provider = self.context.get_using_provider()
             if provider:
                 provider_id = provider.meta().id
                 prompt = (
                     f"今天一个学习社群里，大家一共专注了 {minutes} 分钟。"
-                    f"请用一句话（不超过35个字）把这{minutes}分钟类比成一件有趣的事，"
-                    "想点新鲜、有意思的比喻，不要只说一句话就完事。只说一句话即可，不要多余内容。"
+                    f"请用比喻描述这{minutes}分钟可以做哪些事情，一口气说3个，"
+                    f"每个用'相当于'开头，分3行。例如：\n"
+                    f"相当于看了X部电影\n相当于喝了X杯咖啡\n相当于跑了X公里\n"
+                    "请根据具体时长计算数值，要有真实感。不要多余的话。"
                 )
                 response = await asyncio.wait_for(
                     self.context.llm_generate(
@@ -671,23 +621,62 @@ class ForestRoomPlugin(Star):
                     timeout=120.0
                 )
                 result = response.completion_text.strip()
-                if result and len(result) <= 60:
-                    ai_summary = result
+                if result and len(result) >= 10:
+                    # AI 生成成功，替换换行为顿号
+                    lines = [l.strip() for l in result.split('\n') if l.strip()]
+                    if len(lines) >= 3:
+                        return "，".join(lines[:3])
         except asyncio.TimeoutError:
             logger.warning("AI 生成专注总结超时")
         except Exception as e:
             logger.warning(f"AI 生成专注总结失败: {e}")
 
-        # 选 3 个类比
-        chosen = _pick_analogies(3)
+        # 兜底：类比库随机选取
+        all_analogies = []
+        if minutes >= 180:
+            all_analogies.append(f"相当于通关了{minutes // 180}小时的游戏")
+            all_analogies.append(f"相当于拼完{minutes // 60}块的拼图")
+        if minutes >= 120:
+            all_analogies.append(f"相当于看了{minutes // 120}部电影")
+            all_analogies.append(f"相当于听完{minutes // 60}集播客")
+        if minutes >= 90:
+            all_analogies.append(f"相当于上了{minutes // 90}堂课")
+        if minutes >= 60:
+            all_analogies.append(f"相当于从上海坐高铁到了南京")
+            all_analogies.append(f"相当于享受了一顿{minutes // 60}小时的慢餐")
+            all_analogies.append(f"相当于听了{minutes // 4}首歌")
+            all_analogies.append(f"相当于跑完{minutes // 60}个5公里")
+        if minutes >= 45:
+            all_analogies.append(f"相当于读完{minutes // 45}章小说")
+        if minutes >= 30:
+            all_analogies.append(f"相当于喝了{minutes // 30}杯咖啡")
+            all_analogies.append(f"相当于做完{minutes // 30}组瑜伽")
+            all_analogies.append(f"相当于刷完{minutes // 30}集短剧")
+        if minutes >= 20:
+            all_analogies.append(f"相当于写了{minutes // 20}页学习笔记")
+        if minutes >= 15:
+            all_analogies.append(f"相当于听了{minutes // 15}张音乐专辑")
+            all_analogies.append(f"相当于遛了{minutes // 15}次狗")
+        if minutes >= 10:
+            all_analogies.append(f"相当于跑了{minutes // 10}公里")
+        if minutes >= 5:
+            all_analogies.append(f"相当于走了{minutes // 5 * 600}步")
+            all_analogies.append(f"相当于打了{minutes // 5 * 2}局王者荣耀")
 
-        # 拼装
-        if ai_summary:
-            return ai_summary + "，" + "、".join(chosen)
+        # 去重选 3 个
+        candidates = [a for a in all_analogies if a not in self._last_fallback_choices]
+        if len(candidates) < 3:
+            candidates = all_analogies
+        if len(candidates) >= 3:
+            chosen = random.sample(candidates, 3)
+        elif candidates:
+            chosen = random.sample(candidates, min(len(candidates), 3))
         else:
-            # 兜底：随机选取预设文案
+            # 最终兜底
             fallback = random.choice(self._fallback_summaries).format(minutes)
-            return fallback + "，" + "、".join(chosen)
+            return fallback
+        self._last_fallback_choices = chosen[:]
+        return "，".join(chosen)
 
     async def _send_night_notify(self):
         """发送晚安通知（含今日专注总结）"""
