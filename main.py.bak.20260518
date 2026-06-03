@@ -133,10 +133,6 @@ class ForestRoomPlugin(Star):
         self._ai_queried_tree_ids: list[str] = []
         self._ai_tree_lock = asyncio.Lock()  # AI 树种查询缓存锁
 
-        # === 晚安车跳过 AI 回复标记 ===
-        self._night_bus_skip_reply: bool = False
-        self._night_bus_skip_reply_lock = asyncio.Lock()
-
         # Forest 房间密钥提取模式（优先级：链接 > 英文文本 > 中文文本）
         self.key_patterns = {
             'link': re.compile(r"forestapp\.cc/join-room\?token=([A-Z0-9]+)", re.IGNORECASE),
@@ -165,21 +161,6 @@ class ForestRoomPlugin(Star):
         """
         value = self.config.get(key)
         return value if value is not None else default
-
-    async def _ensure_platform_id(self) -> bool:
-        """确保平台 ID 已初始化，如果未初始化则尝试从平台管理器获取。"""
-        if self._platform_id:
-            return True
-        try:
-            for inst in self.context.platform_manager.platform_insts:
-                pid = inst.meta().id
-                if pid:
-                    self._platform_id = pid
-                    logger.info(f"已从平台管理器获取平台 ID: {self._platform_id}")
-                    return True
-        except Exception as e:
-            logger.error(f"从平台管理器获取平台 ID 失败: {e}")
-        return False
 
     def _validate_fixed_reply_rules(self, rules: list) -> list:
         """
@@ -277,8 +258,6 @@ class ForestRoomPlugin(Star):
         self.keyword_rate_limit_count = self._get_config("keyword_rate_limit_count", 5)
         self.keyword_timestamps: defaultdict[str, deque] = defaultdict(deque)
         self._keyword_rate_limit_lock = asyncio.Lock()  # 关键词限流数据锁
-        self.greeting_timestamps: defaultdict[str, deque] = defaultdict(deque)
-        self._greeting_rate_limit_lock = asyncio.Lock()  # 问候限流数据锁（与关键词分离，避免被关键词高频消息影响）
 
         # === 固定回复配置 ===
         self.fixed_reply_enabled = self._get_config("fixed_reply_enabled", True)
@@ -300,7 +279,6 @@ class ForestRoomPlugin(Star):
 
         # === 今日专注总结配置 ===
         self.night_summary_enabled = self._get_config("night_summary_enabled", True)
-        self._last_fallback_choices = []  # 记录上次用的类比，避免连续重复
         self._fallback_summaries = [
             "{}分钟，每一分钟都在为未来浇水，明天继续浇灌吧",
             "今天一起种下了{}分钟的森林，日积月累，终成参天大树",
@@ -433,7 +411,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not await self._ensure_platform_id():
+        if not self._platform_id:
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -445,7 +423,7 @@ class ForestRoomPlugin(Star):
 
     async def _send_group_message(self, group_id: str, message: str):
         """发送消息到指定群"""
-        if not await self._ensure_platform_id():
+        if not self._platform_id:
             logger.warning("平台 ID 未初始化，无法发送消息")
             return
 
@@ -463,7 +441,7 @@ class ForestRoomPlugin(Star):
 
     async def _send_group_message_with_image(self, group_id: str, message: str, image_path: Path | None):
         """发送消息到指定群（带图片）"""
-        if not await self._ensure_platform_id():
+        if not self._platform_id:
             logger.warning("平台 ID 未初始化，无法发送消息")
             return
 
@@ -484,21 +462,11 @@ class ForestRoomPlugin(Star):
             logger.error(f"发送消息到群 {group_id} 异常: {e}")
 
     async def _send_morning_notify(self):
-        """发送早安通知（附带每日树种、高考倒计时和图片）"""
+        """发送早安通知（附带每日树种和图片）"""
         logger.info("发送早安打卡通知")
 
         base_message = self.morning_notify_text
         tree_image_path = None
-
-        # 添加倒计时
-        countdown_texts, today_events = self._get_countdown_texts()
-        if countdown_texts:
-            countdown_block = "\n".join(countdown_texts)
-            # 当天有事件时追加鼓励语
-            if today_events:
-                encouragement = self._get_today_encouragement(today_events)
-                countdown_block = f"{countdown_block}\n\n{encouragement}"
-            base_message = f"{base_message}\n\n{countdown_block}"
 
         if self.tree_notify_enabled and self.tree_manager.trees_data:
             tree_message, tree_id = await self._get_daily_tree_message()
@@ -511,7 +479,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not await self._ensure_platform_id():
+        if not self._platform_id:
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -520,30 +488,6 @@ class ForestRoomPlugin(Star):
                 await self._send_group_message_with_image(group_id, base_message, tree_image_path)
             except Exception as e:
                 logger.error(f"发送消息到群 {group_id} 失败: {e}")
-
-    def _get_countdown_texts(self) -> tuple[list[str], list[str]]:
-        """获取所有倒计时事件的文本列表
-
-        Returns:
-            tuple[list[str], list[str]]: (文本列表, 今天的倒计时事件名称列表)
-        """
-        try:
-            return self.db.get_countdown_texts()
-        except Exception as e:
-            logger.error(f"获取倒计时文本失败: {e}")
-            return [], []
-
-    def _get_today_encouragement(self, events: list[str]) -> str:
-        """根据今天的倒计时事件生成鼓励语"""
-        event_name = events[0]
-        encouragements = [
-            f"✨ 今天是{event_name}的日子，愿你心愿达成，一切顺利！🎉",
-            f"🌟 就在今天！{event_name}，加油！你一定能行！💪",
-            f"🎉 今天{event_name}啦！祝你一切顺利，心想事成！🌈",
-            f"💫 {event_name}就在今天！愿你充满能量，闪闪发光！✨",
-            f"🔥 今天{event_name}！冲冲冲，未来在等你！🚀",
-        ]
-        return random.choice(encouragements)
 
     async def _get_daily_tree_message(self) -> tuple[str, str] | tuple[None, None]:
         """获取今日推送的树种信息，返回 (消息, 树种ID)"""
@@ -597,97 +541,40 @@ class ForestRoomPlugin(Star):
             return message, tree_id
 
     async def _generate_focus_summary(self, minutes: int) -> str:
-        """生成今日专注总结：1句点睛类比 + 3个换算类比"""
+        """调用 AI 生成今日专注时长的简短介绍"""
         if minutes <= 0:
             return ""
 
-        # 先构建类比库
-        all_analogies = []
-        if minutes >= 120:
-            all_analogies.append(f"看了{minutes // 120}部电影")
-            all_analogies.append(f"看完一部{minutes}分钟超长纪录片")
-        if minutes >= 60:
-            all_analogies.append(f"听了{minutes // 4}首歌")
-            all_analogies.append(f"听完{minutes // 50}张音乐专辑")
-        if minutes >= 10:
-            all_analogies.append(f"跑了{minutes // 10}公里")
-            all_analogies.append(f"刷了{minutes // 2}条短视频")
-        if minutes >= 30:
-            all_analogies.append(f"喝了{minutes // 30}杯咖啡")
-            all_analogies.append(f"做了{minutes // 30}道菜的大餐")
-        if minutes >= 5:
-            all_analogies.append(f"走了{minutes // 5 * 600}步")
-            all_analogies.append(f"打了{minutes // 90}局羽毛球")
-        if minutes >= 45:
-            all_analogies.append(f"上了{minutes // 45}节课")
-            all_analogies.append(f"读了{minutes // 60}章小说")
-        if minutes >= 180:
-            all_analogies.append(f"通关了{minutes // 180}小时游戏")
-            all_analogies.append(f"拼完{minutes // 60}片拼图")
-        # 新增类比，增加多样性
-        if minutes >= 0:
-            all_analogies.append(f"相当于专注了{minutes}分钟的心流之旅")
-        if minutes >= 15:
-            all_analogies.append(f"听完{minutes // 15}张音乐专辑")
-        if minutes >= 20:
-            all_analogies.append(f"写了{minutes // 20}页学习笔记")
-        if minutes >= 25:
-            all_analogies.append(f"做完{minutes // 25}组腹肌训练")
-        if minutes >= 60:
-            all_analogies.append(f"从上海高铁到了南京")
-            all_analogies.append(f"享受了一顿{minutes // 60}小时的慢餐")
-            all_analogies.append(f"看完{minutes // 60}集30分钟短剧")
-        if minutes >= 90:
-            all_analogies.append(f"认真专注了{minutes // 90}堂课的时间")
-
-        def _pick_analogies(count: int = 3) -> list:
-            """从类比库中选 count 个，避免连续重复"""
-            candidates = [a for a in all_analogies if a not in self._last_fallback_choices]
-            if len(candidates) < count:
-                candidates = all_analogies
-            if len(candidates) >= count:
-                chosen = random.sample(candidates, count)
-            else:
-                chosen = candidates[:]
-            self._last_fallback_choices = chosen[:]
-            return chosen
-
-        # 先尝试 AI 生成点睛句
-        ai_summary = None
         try:
             provider = self.context.get_using_provider()
-            if provider:
-                provider_id = provider.meta().id
-                prompt = (
-                    f"今天一个学习社群里，大家一共专注了 {minutes} 分钟。"
-                    f"请用一句话（不超过35个字）把这{minutes}分钟类比成一件有趣的事，"
-                    "想点新鲜、有意思的比喻，不要只说一句话就完事。只说一句话即可，不要多余内容。"
-                )
-                response = await asyncio.wait_for(
-                    self.context.llm_generate(
-                        chat_provider_id=provider_id,
-                        prompt=prompt,
-                    ),
-                    timeout=120.0
-                )
-                result = response.completion_text.strip()
-                if result and len(result) <= 60:
-                    ai_summary = result
+            if not provider:
+                raise Exception("No provider available")
+
+            provider_id = provider.meta().id
+            prompt = (
+                f"今天一个学习社群里，大家一共专注了 {minutes} 分钟。"
+                "请用一句简短自然的话(20-50字)介绍一下这个专注时长，"
+                "语气温暖但不要过于热情，也不要用任何emoji和符号，一句话即可。"
+            )
+
+            response = await asyncio.wait_for(
+                self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                ),
+                timeout=10.0
+            )
+
+            result = response.completion_text.strip()
+            if result:
+                return result
         except asyncio.TimeoutError:
             logger.warning("AI 生成专注总结超时")
         except Exception as e:
             logger.warning(f"AI 生成专注总结失败: {e}")
 
-        # 选 3 个类比
-        chosen = _pick_analogies(3)
-
-        # 拼装
-        if ai_summary:
-            return ai_summary + "，" + "、".join(chosen)
-        else:
-            # 兜底：随机选取预设文案
-            fallback = random.choice(self._fallback_summaries).format(minutes)
-            return fallback + "，" + "、".join(chosen)
+        # 兜底：随机选取预设文案
+        return random.choice(self._fallback_summaries).format(minutes)
 
     async def _send_night_notify(self):
         """发送晚安通知（含今日专注总结）"""
@@ -697,7 +584,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not await self._ensure_platform_id():
+        if not self._platform_id:
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -711,7 +598,7 @@ class ForestRoomPlugin(Star):
                     if today_minutes > 0:
                         summary = await self._generate_focus_summary(today_minutes)
                         if summary:
-                            message += "\n\n━━━ 今日专注小报 ━━━" + "\n" + "今天群里一共专注了 " + str(today_minutes) + " 分钟\n\n" + summary
+                            message += "\n\n━━━ 今日专注小报 ━━━" + "\n今天群里一共专注了 " + str(today_minutes) + " 分钟" + "\n\n" + summary
 
                 await self._send_group_message(group_id, message)
             except Exception as e:
@@ -725,7 +612,7 @@ class ForestRoomPlugin(Star):
             logger.debug("白名单为空，跳过推送")
             return
 
-        if not await self._ensure_platform_id():
+        if not self._platform_id:
             logger.warning("平台 ID 未初始化，跳过推送")
             return
 
@@ -734,22 +621,9 @@ class ForestRoomPlugin(Star):
 
             # 只有报名人数 > 2 才发送发车通知
             if len(signups) > 2:
-                display_names = []
-                for s in signups:
-                    uid, name = s[0], s[1] or s[0]
-                    pref_t = s[2] if len(s) > 2 and s[2] else ''
-                    pref_tr = s[3] if len(s) > 3 and s[3] else ''
-                    details = []
-                    if pref_t:
-                        details.append(pref_t)
-                    if pref_tr:
-                        details.append(pref_tr)
-                    if details:
-                        display_names.append(f"{name}（{'，'.join(details)}）")
-                    else:
-                        display_names.append(name)
+                names = [name or uid for uid, name in signups]
                 message = f"🚌 晚安车准备发车，请司机和各位乘客准备！\n\n今日乘客 {len(signups)} 人："
-                message += "\n" + "、".join(display_names)
+                message += "\n" + "、".join(names)
 
                 try:
                     await self._send_group_message(group_id, message)
@@ -832,25 +706,6 @@ class ForestRoomPlugin(Star):
 
             if len(timestamps) >= self.keyword_rate_limit_count:
                 logger.debug(f"群 {group_id} 关键词触发限流，当前计数: {len(timestamps)}")
-                return False
-
-            timestamps.append(now)
-            return True
-
-    async def _check_greeting_rate_limit(self, group_id: str) -> bool:
-        """检查问候是否触发限流（与关键词限流分离）"""
-        if not self.keyword_rate_limit_enabled:
-            return True
-
-        async with self._greeting_rate_limit_lock:
-            now = time.time()
-            timestamps = self.greeting_timestamps[group_id]
-
-            while timestamps and timestamps[0] < now - self.keyword_rate_limit_window:
-                timestamps.popleft()
-
-            if len(timestamps) >= self.keyword_rate_limit_count:
-                logger.debug(f"群 {group_id} 问候触发限流，当前计数: {len(timestamps)}")
                 return False
 
             timestamps.append(now)
@@ -954,26 +809,6 @@ class ForestRoomPlugin(Star):
                 return "本周全勤，没有缺打卡"
             return f"本周未打卡日期：{', '.join(missed)}"
 
-        async def get_user_today_focus(context, **kwargs) -> str:
-            """查询用户今日专注成果（种了几次树、总时长、种了什么树）"""
-            summary = self.db.get_user_today_focus_summary(user_id, group_id)
-            if not summary["has_data"]:
-                return "今日暂无专注记录，快去种树吧！"
-
-            minutes = summary["total_minutes"]
-            hours_part = minutes // 60
-            mins_part = minutes % 60
-            if hours_part > 0:
-                time_str = f"{hours_part}小时{mins_part}分钟" if mins_part > 0 else f"{hours_part}小时"
-            else:
-                time_str = f"{mins_part}分钟"
-
-            result = f"今日专注{summary['total_sessions']}次，共{time_str}"
-            if summary["trees"]:
-                trees_str = "、".join(summary["trees"])
-                result += f"，种了：{trees_str}"
-            return result
-
         tools = ToolSet([
             FunctionTool(
                 name="check_today_checkin",
@@ -992,12 +827,6 @@ class ForestRoomPlugin(Star):
                 parameters={"type": "object", "properties": {}},
                 description="查询用户本周哪些天没有打卡",
                 handler=get_missed_checkin_days,
-            ),
-            FunctionTool(
-                name="get_user_today_focus",
-                parameters={"type": "object", "properties": {}},
-                description="查询用户今日专注成果（种了几次树、总时长、种了什么树），当用户炫耀种树成果、求夸奖、求鼓励时调用",
-                handler=get_user_today_focus,
             ),
         ])
         return tools
@@ -1184,126 +1013,43 @@ class ForestRoomPlugin(Star):
         ])
         return tools
 
-    def _format_night_bus_list(self, signups: list) -> list:
-        """格式化晚安车名单，返回每行的文本列表
-
-        signups: [(user_id, user_name, preferred_time, preferred_tree)]
-        """
-        lines = []
-        for idx, item in enumerate(signups):
-            # 兼容旧格式（3或4个字段）
-            if len(item) >= 4:
-                uid, name, pref_time, pref_tree = item[0], item[1], item[2] or '', item[3] or ''
-            else:
-                uid, name = item[0], item[1]
-                pref_time, pref_tree = '', ''
-
-            display_name = name or uid
-            details = []
-            if pref_time:
-                details.append(pref_time)
-            if pref_tree:
-                details.append(pref_tree)
-            if details:
-                lines.append(f"  {idx+1}. {display_name}（{'，'.join(details)}）")
-            else:
-                lines.append(f"  {idx+1}. {display_name}")
-        return lines
-
     def _build_night_bus_tools(self, user_id: str, group_id: str) -> ToolSet:
         """构建晚安车工具集"""
 
-        async def signup_night_bus(context, preferred_time: str = None, preferred_tree: str = None, **kwargs) -> str:
+        async def signup_night_bus(context, **kwargs) -> str:
             """报名晚安车"""
             # 检查时间段
             current_time = datetime.now().strftime("%H:%M")
             if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
                 return f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
-
-            pref_str = f"，{preferred_time}" if preferred_time else ""
-            pref_str += f"，{preferred_tree}" if preferred_tree else ""
-
-            user_name = context.get_sender_name() or (f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}")
-            success = self.db.signup_night_bus(
-                user_id, group_id, user_name,
-                preferred_time=preferred_time, preferred_tree=preferred_tree
-            )
-            signups = self.db.get_night_bus_signups(group_id)
-
+            
+            user_name = f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}"
+            success = self.db.signup_night_bus(user_id, group_id, user_name)
             if success:
-                lines = [f"✅ 报名成功{pref_str}！当前已报名 {len(signups)} 人："]
-                lines.extend(self._format_night_bus_list(signups))
+                count = self.db.get_night_bus_count(group_id)
+                return f"✅ 报名成功！当前已报名 {count} 人"
             else:
-                lines = [f"✅ 已更新报名信息{pref_str}"]
-                lines.append(f"当前共 {len(signups)} 人：")
-                lines.extend(self._format_night_bus_list(signups))
-
-            msg = "\n".join(lines)
-            async with self._night_bus_skip_reply_lock:
-                self._night_bus_skip_reply = True
-            try:
-                if hasattr(context, 'bot'):
-                    await context.bot.call_action(
-                        "send_group_msg",
-                        group_id=int(group_id),
-                        message=msg
-                    )
-                    return "[已发送报名成功消息]"
-            except Exception as e:
-                logger.error(f"工具发送晚安车消息失败: {e}")
-            return msg
+                return "⚠️ 今日已报名，无需重复报名"
 
         async def cancel_night_bus(context, **kwargs) -> str:
             """取消晚安车报名"""
             success = self.db.cancel_night_bus(user_id, group_id)
-            signups = self.db.get_night_bus_signups(group_id)
             if success:
-                if signups:
-                    lines = [f"❌ 已取消报名，当前剩余 {len(signups)} 人："]
-                    lines.extend(self._format_night_bus_list(signups))
-                else:
-                    lines = ["❌ 已取消报名，当前无人报名"]
+                count = self.db.get_night_bus_count(group_id)
+                return f"❌ 已取消报名，当前剩余 {count} 人"
             else:
-                lines = ["⚠️ 今日尚未报名"]
-
-            msg = "\n".join(lines)
-            async with self._night_bus_skip_reply_lock:
-                self._night_bus_skip_reply = True
-            try:
-                if hasattr(context, 'bot'):
-                    await context.bot.call_action(
-                        "send_group_msg",
-                        group_id=int(group_id),
-                        message=msg
-                    )
-                    return "[已发送取消报名消息]"
-            except Exception as e:
-                logger.error(f"工具发送取消晚安车消息失败: {e}")
-            return msg
+                return "⚠️ 今日尚未报名"
 
         async def query_night_bus_signups(context, **kwargs) -> str:
             """查询今日晚安车报名名单"""
             signups = self.db.get_night_bus_signups(group_id)
             if signups:
+                names = [name or uid for uid, name in signups]
                 lines = [f"🚌 今日晚安车已报名 {len(signups)} 人："]
-                lines.extend(self._format_night_bus_list(signups))
+                lines.extend([f"  {i+1}. {name}" for i, name in enumerate(names)])
+                return "\n".join(lines)
             else:
-                lines = ["🚌 今日暂无人报名晚安车"]
-
-            msg = "\n".join(lines)
-            async with self._night_bus_skip_reply_lock:
-                self._night_bus_skip_reply = True
-            try:
-                if hasattr(context, 'bot'):
-                    await context.bot.call_action(
-                        "send_group_msg",
-                        group_id=int(group_id),
-                        message=msg
-                    )
-                    return "[已发送晚安车名单]"
-            except Exception as e:
-                logger.error(f"工具发送晚安车名单失败: {e}")
-            return msg
+                return "🚌 今日暂无人报名晚安车"
 
         async def get_user_night_bus_count(context, **kwargs) -> str:
             """查询个人累计参加晚安车次数"""
@@ -1313,14 +1059,8 @@ class ForestRoomPlugin(Star):
         tools = ToolSet([
             FunctionTool(
                 name="signup_night_bus",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "preferred_time": {"type": "string", "description": "偏好的发车时间，如'11点'、'10点半'、'10点30分'。没有时间偏好时不用传"},
-                        "preferred_tree": {"type": "string", "description": "偏好的树种，如'蓝花楹'、'樱花'。没有树种偏好时不用传"}
-                    }
-                },
-                description="报名参加晚安车，支持指定时间和树种偏好",
+                parameters={"type": "object", "properties": {}},
+                description="报名参加晚安车",
                 handler=signup_night_bus,
             ),
             FunctionTool(
@@ -1387,103 +1127,8 @@ class ForestRoomPlugin(Star):
             if match:
                 room_key = match.group(1)
         
-        # === 私聊 AI 回复处理（无房间密钥的私聊消息） ===
         if not room_key:
-            group_id = event.get_group_id()
-            # 只有私聊才走 AI 回复
-            if group_id:
-                return
-
-            logger.info(f"[私聊AI] 收到私聊消息: {message_text} (sender={event.get_sender_id()})")
-
-            # 清空 AI 树种查询缓存
-            async with self._ai_tree_lock:
-                self._ai_queried_tree_ids = []
-
-            # 构建树种查询工具集
-            tree_tools = self._build_tree_tools()
-
-            # 获取人设提示词
-            persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
-            system_prompt = persona.get("prompt", "") if persona else ""
-            system_prompt += """\n\n你是果果，一个温暖可爱的 Forest 森林陪伴助手。你可以使用工具查询 Forest 树种信息。
-
-当用户询问树种相关问题或想要随机抽取树种时，可以调用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。
-
-重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。"""
-
-            # 检测树种推荐意图，提前预选树种确保附带图片
-            tree_recommend_keywords = [
-                "推荐树", "树种推荐", "什么树", "想要树", "送树",
-                "奖励树", "要一颗树", "有没有好看的树", "好看的树",
-                "什么树种", "推荐一个", "推荐一颗", "抽树", "抽树种",
-                "随机树", "随机树种", "给我一个树", "给我树种", "给我树"
-            ]
-            is_tree_recommend = any(kw in message_text for kw in tree_recommend_keywords)
-
-            if is_tree_recommend and self.tree_manager.trees_list:
-                pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
-                async with self._ai_tree_lock:
-                    if pre_tree_id not in self._ai_queried_tree_ids:
-                        self._ai_queried_tree_ids.append(pre_tree_id)
-                pre_zh = pre_info.get("zh", "未知")
-                pre_en = pre_info.get("en", "")
-                pre_tier = pre_info.get("tier", "")
-                pre_desc = pre_info.get("description", "")
-                logger.info(f"[私聊AI] 预选树种: {pre_zh} (ID: {pre_tree_id})")
-                system_prompt += f"""
-当前用户请求推荐树种。已为用户预选了一个树种：{pre_zh}（{pre_en}）[{pre_tier}]。
-树种描述：{pre_desc}
-请用可爱的语气为用户介绍这个树种，注意不要再调用 random_tree_seed 等树种查询工具。
-"""
-            else:
-                system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
-
-            provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
-
-            logger.info(f"[私聊AI] 开始调用 AI")
-            try:
-                response = await self.context.tool_loop_agent(
-                    event=event,
-                    chat_provider_id=provider_id,
-                    prompt=message_text,
-                    tools=tree_tools,
-                    system_prompt=system_prompt,
-                )
-
-                resp_text = response.completion_text or ""
-                if not resp_text and response.result_chain:
-                    for comp in response.result_chain.chain:
-                        if isinstance(comp, Plain) and comp.text:
-                            resp_text = comp.text
-                            break
-
-                components = [Plain(resp_text)]
-
-                async with self._ai_tree_lock:
-                    queried_ids = list(self._ai_queried_tree_ids[:3])
-
-                logger.info(f"[私聊AI] queried_ids={queried_ids}")
-
-                if queried_ids:
-                    for tree_id in queried_ids:
-                        image_path = self.tree_manager.get_tree_image_path(tree_id)
-                        exists = image_path.exists() if image_path else False
-                        logger.info(f"[私聊AI] 图片检查: tree_id={tree_id}, path={image_path}, exists={exists}")
-                        if image_path and exists:
-                            components.append(Image(file=str(image_path)))
-                            logger.info(f"[私聊AI] 已添加图片: {image_path}")
-
-                logger.info(f"[私聊AI] 最终 components 数量: {len(components)}")
-                yield event.chain_result(components)
-                return
-
-            except Exception as e:
-                logger.error(f"[私聊AI] 回复失败: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                return
-
+            return
         group_id = event.get_group_id()
         original_msg_id = _get_message_id(event)
 
@@ -1770,10 +1415,7 @@ class ForestRoomPlugin(Star):
         if not self._platform_id:
             self._platform_id = event.get_platform_id()
 
-        logger.debug(f" 被触发! group_id={event.get_group_id()}, msg={event.message_str}")
-
         if not self.enabled or not self.greeting_reply_enabled:
-            logger.debug(f" 未启用: enabled={self.enabled}, greeting_reply_enabled={self.greeting_reply_enabled}")
             return
 
         message_text = event.message_str.strip()
@@ -1783,16 +1425,14 @@ class ForestRoomPlugin(Star):
 
         # 白名单检查
         if self.whitelist and group_id not in self.whitelist:
-            logger.debug(f" 群 {group_id} 不在白名单")
             return
 
         # 黑名单检查
         if group_id in self.blacklist:
             return
 
-        # 限流检查（使用独立的问候限流，不受关键词高频消息影响）
-        if not await self._check_greeting_rate_limit(group_id):
-            logger.debug(f" 群 {group_id} 被限流")
+        # 限流检查（复用关键词限流）
+        if not await self._check_keyword_rate_limit(group_id):
             return
 
         current_time = datetime.now().strftime("%H:%M")
@@ -1822,23 +1462,14 @@ class ForestRoomPlugin(Star):
         if reply is None and "晚安车" not in message_text:
             for kw in night_keywords:
                 if kw in message_text:
-                    logger.debug(f" 匹配关键词 {kw}，当前时间 {current_time}，时间范围 {self.night_greeting_start}-{self.night_greeting_end}")
                     if self._is_in_time_range(current_time, self.night_greeting_start, self.night_greeting_end):
                         if self.night_greeting_replies:
                             reply = random.choice(self.night_greeting_replies)
                             logger.info(f"检测到晚安关键词: {kw}")
-                        else:
-                            logger.debug(f" night_greeting_replies 为空")
-                    else:
-                        logger.debug(f" 时间范围不匹配")
                     break
 
         if reply:
-            logger.debug(f" 发送回复: {reply}")
             yield event.plain_result(reply)
-        else:
-            logger.debug(f" 未生成回复")
-
 
     # === 关键词唤起 AI 回复 ===
 
@@ -1846,7 +1477,6 @@ class ForestRoomPlugin(Star):
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def on_keyword_message(self, event: AstrMessageEvent):
         """监听群消息，检测关键词或@机器人触发回复"""
-        logger.info(f"[DEBUG] on_keyword_message 被触发! group_id={event.get_group_id()}, is_at={event.is_at_or_wake_command}, msg={event.message_str[:50]}")
         if not self._platform_id:
             self._platform_id = event.get_platform_id()
 
@@ -1857,6 +1487,11 @@ class ForestRoomPlugin(Star):
 
         # 检查是否触发关键词
         is_keyword_trigger = self.keyword_pattern and self.keyword_pattern.search(message_text)
+
+        # 如果没有触发关键词，检查是否是命令（跳过命令）
+        if not is_keyword_trigger:
+            if hasattr(event, 'is_wake_up') and event.is_wake_up:
+                return
 
         # 检查是否触发 @机器人
         is_atme_trigger = event.is_at_or_wake_command
@@ -1880,10 +1515,6 @@ class ForestRoomPlugin(Star):
         if not await self._check_keyword_rate_limit(group_id):
             return
 
-        # 重置晚安车跳过 AI 回复标记
-        async with self._night_bus_skip_reply_lock:
-            self._night_bus_skip_reply = False
-
         # 获取用户信息
         user_id = event.get_sender_id()
 
@@ -1906,65 +1537,21 @@ class ForestRoomPlugin(Star):
         # 获取默认人设的系统提示词
         persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
         system_prompt = persona.get("prompt", "") if persona else ""
-        system_prompt += """\n\n你可以使用工具查询用户的打卡记录、Forest 专注成果、树种信息和晚安车报名情况。
+        system_prompt += """\n\n你可以使用工具查询用户的打卡记录、Forest 树种信息和晚安车报名情况。
 
-当用户询问打卡、专注、树种或晚安车相关问题时，请调用相应的工具。
+当用户询问打卡、树种或晚安车相关问题时，请调用相应的工具。
 
 重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。
 
-当用户@你并分享种树成果、专注时长、求夸奖、求鼓励时，使用 get_user_today_focus 工具查询今日专注数据，然后用温暖可爱的语气根据数据夸奖用户：
-- 总时长越长（如120分钟以上）：夸得越夸张，越热情
-- 种的树多种类丰富：夸效率高、多样化
-- 如果有打卡数据也一起展示
-- 如果今天还没有专注记录，用温柔的语气鼓励用户去种树
-
 晚安车相关操作必须使用专门的晚安车工具（signup_night_bus、cancel_night_bus、query_night_bus_signups、get_user_night_bus_count），不要使用文件搜索工具处理晚安车相关的问题。
 
-重要：晚安车工具会自己发送报名成功/取消/名单消息到群里，你不需要再额外回复任何晚安车相关的内容给用户。工具返回"[已发送xxx消息]"代表消息已发出。
-
-signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参数，由你从用户消息中提取。用户说晚安车+时间就是报名意图，不一定需要"报名"关键词。
-
-示例：
-- 用户说"晚安车11点"或"晚安车 10点半" → signup_night_bus(preferred_time="11点") 或 signup_night_bus(preferred_time="10点半")
-- 用户说"报名晚安车，11点，蓝花楹" → signup_night_bus(preferred_time="11点", preferred_tree="蓝花楹")
-- 不要用文件搜索工具处理，不要从消息原文中手动拼接参数，直接理解语义后传给工具
-
 晚安车相关操作包括：
-- 报名：用户说"晚安车XX点"、"报名晚安车"、"我要报名"等
-- 取消：用户说"取消晚安车"、"取消报名"等
-- 查询：用户说"晚安车有谁"、"晚安车名单"等
-- 统计：用户说"我晚安车几次"等"""
+- 报名：用户说"报名晚安车"、"我要报名"、"报名"等
+- 取消：用户说"取消报名"、"取消晚安车报名"、"取消"等
+- 查询：用户说"晚安车有谁"、"晚安车名单"、"有多少人报名"、"有谁"等
+- 统计：用户说"我晚安车几次"、"我参加了几次"、"晚安车统计"等"""
 
-        # === 检测树种推荐意图，提前预选树种确保附带图片 ===
-        tree_recommend_keywords = [
-            "推荐树", "树种推荐", "什么树", "想要树", "送树",
-            "奖励树", "要一颗树", "有没有好看的树", "好看的树",
-            "什么树种", "推荐一个", "推荐一颗"
-        ]
-        is_tree_recommend = any(kw in message_text for kw in tree_recommend_keywords)
-
-        if is_tree_recommend and self.tree_manager.trees_list:
-            # 直接预选一个树种，确保树种 ID 被记录，AI 回复后会附带图片
-            pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
-            async with self._ai_tree_lock:
-                if pre_tree_id not in self._ai_queried_tree_ids:
-                    self._ai_queried_tree_ids.append(pre_tree_id)
-            pre_zh = pre_info.get("zh", "未知")
-            pre_en = pre_info.get("en", "")
-            pre_tier = pre_info.get("tier", "")
-            pre_desc = pre_info.get("description", "")
-            logger.info(f"预选树种供 AI 推荐: {pre_zh} (ID: {pre_tree_id})")
-            system_prompt += f"""
-当前用户请求推荐树种。已为用户预选了一个树种：{pre_zh}（{pre_en}）[{pre_tier}]。
-树种描述：{pre_desc}
-请用可爱的语气为用户介绍这个树种，注意不要再调用 random_tree_seed 等树种查询工具。
-"""
-        else:
-            system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
-
-        # 告诉 AI 用户是否已 @ 机器人（修复 AI 不知情的 bug）
-        if is_atme_trigger:
-            system_prompt += "\n\n【重要】用户已经 @了机器人，请直接处理请求，不要再提示用户需要 @。"
+        system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
 
         # 获取当前 chat provider
         provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
@@ -1982,15 +1569,7 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
             )
 
             # 构建消息组件
-            # 优先使用 completion_text，如果为空则尝试从 result_chain 提取
-            logger.info(f"[DEBUG] LLMResponse: role={response.role}, ct={repr(response.completion_text)[:100]}, rc={response.result_chain}")
-            resp_text = response.completion_text or ""
-            if not resp_text and response.result_chain:
-                for comp in response.result_chain.chain:
-                    if isinstance(comp, Plain) and comp.text:
-                        resp_text = comp.text
-                        break
-            components = [Plain(resp_text)]
+            components = [Plain(response.completion_text)]
 
             # 如果 AI 查询了树种，附加图片（使用锁保护读取）
             async with self._ai_tree_lock:
@@ -2002,27 +1581,11 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
                     if image_path and image_path.exists():
                         components.append(Image(file=str(image_path)))
 
-            # 晚安车相关操作由工具直接发送消息，跳过 AI 回复
-            async with self._night_bus_skip_reply_lock:
-                need_skip = self._night_bus_skip_reply
-                self._night_bus_skip_reply = False  # 重置标记
-
-            if need_skip:
-                logger.info("晚安车操作已由工具直接发送，跳过 AI 回复")
-                return
-
             yield event.chain_result(components)
 
         except Exception as e:
             logger.error(f"AI 回复失败: {e}")
-            # 晚安车相关操作已由工具发送，出错时不额外回复
-            async with self._night_bus_skip_reply_lock:
-                if self._night_bus_skip_reply:
-                    self._night_bus_skip_reply = False
-                    return
             yield event.plain_result("抱歉，处理您的请求时出现了问题。")
-
-
 
     # === 打卡功能 ===
 
@@ -2411,74 +1974,5 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
 
         if len(results) > 10:
             lines.append(f"... 还有 {len(results) - 10} 个")
-
-        yield event.plain_result("\n".join(lines))
-
-    # === 倒计时管理 ===
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("forest添加倒计时")
-    async def add_countdown(self, event: AstrMessageEvent, name: str, target_date: str = ""):
-        """添加倒计时事件
-        格式：forest添加倒计时 事件名称 MM-DD
-        或：forest添加倒计时 事件名称 YYYY-MM-DD
-        """
-        if not name or not target_date:
-            yield event.plain_result("请输入事件名称和日期\n格式：forest添加倒计时 高考 06-07")
-            return
-
-        if self.db.add_countdown_event(name, target_date):
-            logger.info(f"已添加倒计时: {name} -> {target_date}")
-            yield event.plain_result(f"✅ 已添加倒计时：{name} -> {target_date}")
-        else:
-            yield event.plain_result("❌ 添加失败")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("forest删除倒计时")
-    async def remove_countdown(self, event: AstrMessageEvent, event_id: int = 0):
-        """删除倒计时事件（按ID删除）
-        格式：forest删除倒计时 ID
-        """
-        if not event_id:
-            yield event.plain_result("请输入要删除的倒计时事件ID\n格式：forest删除倒计时 1")
-            return
-
-        if self.db.remove_countdown_event(event_id):
-            yield event.plain_result(f"✅ 已删除倒计时事件 #{event_id}")
-        else:
-            yield event.plain_result(f"❌ 未找到倒计时事件 #{event_id}")
-
-    @filter.command("forest倒计时列表")
-    async def list_countdown(self, event: AstrMessageEvent):
-        """查看所有倒计时事件"""
-        events = self.db.list_countdown_events()
-        if not events:
-            yield event.plain_result("📭 暂无倒计时事件")
-            return
-
-        now = datetime.now()
-        lines = ["⏰ 倒计时事件列表："]
-        for eid, name, target_date in events:
-            # 计算剩余天数供显示
-            try:
-                parts = target_date.split("-")
-                if len(parts) == 2:
-                    month, day = int(parts[0]), int(parts[1])
-                    event_date = datetime(now.year, month, day)
-                    if now.date() > event_date.date():
-                        event_date = datetime(now.year + 1, month, day)
-                    days = (event_date.date() - now.date()).days
-                    lines.append(f"  #{eid} {name}：{target_date}（每年，还剩{days}天）")
-                elif len(parts) == 3:
-                    event_date = datetime(int(parts[0]), int(parts[1]), int(parts[2]))
-                    days = (event_date.date() - now.date()).days
-                    if days >= 0:
-                        lines.append(f"  #{eid} {name}：{target_date}（还剩{days}天）")
-                    else:
-                        lines.append(f"  #{eid} {name}：{target_date}（已过）")
-                else:
-                    lines.append(f"  #{eid} {name}：{target_date}（格式异常）")
-            except (ValueError, IndexError):
-                lines.append(f"  #{eid} {name}：{target_date}（日期无效）")
 
         yield event.plain_result("\n".join(lines))
