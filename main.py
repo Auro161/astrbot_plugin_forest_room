@@ -84,7 +84,7 @@ class TreeManager:
         en_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', tree_info.get("en", ""))
         zh_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', tree_info.get("zh", ""))
         safe_tree_id = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', tree_id)
-        image_name = f"{safe_tree_id}_{en_name}_{zh_name}.webp"
+        image_name = f"{safe_tree_id}_{en_name}_{zh_name}.png"
         image_path = self.plugin_dir / "tree" / "mature_trees" / image_name
 
         # 额外检查：确保路径在预期目录内
@@ -2379,10 +2379,9 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
         else:
             yield event.plain_result("❌ 重置失败")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("forest搜索树种")
     async def search_tree(self, event: AstrMessageEvent, keyword: str = ""):
-        """搜索树种"""
+        """搜索树种（附带匹配树种图片）"""
         if not keyword:
             yield event.plain_result("请输入搜索关键词，如：forest搜索树种 樱花")
             return
@@ -2401,7 +2400,15 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
         if len(results) > 10:
             lines.append(f"... 还有 {len(results) - 10} 个")
 
-        yield event.plain_result("\n".join(lines))
+        components = [Plain("\n".join(lines))]
+
+        # 附带最多 3 个匹配树种的图片
+        for tree_id, _ in results[:3]:
+            image_path = self.tree_manager.get_tree_image_path(tree_id)
+            if image_path and image_path.exists():
+                components.append(Image(file=str(image_path)))
+
+        yield event.chain_result(MessageChain(components))
 
     # === 倒计时管理 ===
 

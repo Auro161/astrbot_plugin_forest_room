@@ -225,7 +225,7 @@ async def admin_handler(self, event: AstrMessageEvent):
 
 新增树种只需：
 1. 在 `tree/tree_names.json` 添加新树种数据
-2. 在 `tree/mature_trees/` 添加对应图片（格式：`{ID}_{英文名}_{中文名}.webp`）
+2. 在 `tree/mature_trees/` 添加对应图片（格式：`{ID}_{英文名}_{中文名}.png`）
 3. 重启插件自动加载
 
 数据库会自动兼容：
@@ -316,7 +316,7 @@ async def new_command(self, event: AstrMessageEvent, arg: str = None):
 @filter.command("示例")
 async def example(self, event: AstrMessageEvent):
     message = "消息内容"
-    image_path = Path("path/to/image.webp")
+    image_path = Path("path/to/image.png")
 
     components = [Plain(message)]
     if image_path and image_path.exists():
