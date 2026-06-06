@@ -1964,7 +1964,9 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
         tree_recommend_keywords = [
             "推荐树", "树种推荐", "什么树", "想要树", "送树",
             "奖励树", "要一颗树", "有没有好看的树", "好看的树",
-            "什么树种", "推荐一个", "推荐一颗"
+            "什么树种", "推荐一个", "推荐一颗",
+            "随机树种", "随机树", "抽树", "抽树种",
+            "给我一个树", "给我树种", "给我树"
         ]
         is_tree_recommend = any(kw in message_text for kw in tree_recommend_keywords)
 
