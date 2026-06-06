@@ -1401,6 +1401,20 @@ class ForestRoomPlugin(Star):
 
 重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。"""
 
+            # === 扫描消息中提到的具体树种名，提前预填缓存确保附带图片 ===
+            async with self._ai_tree_lock:
+                for tree_id, info in self.tree_manager.trees_list:
+                    zh = info.get("zh", "")
+                    en = info.get("en", "")
+                    if len(zh) >= 2 and zh in message_text:
+                        if tree_id not in self._ai_queried_tree_ids:
+                            self._ai_queried_tree_ids.append(tree_id)
+                            logger.info(f"[私聊AI] 消息中识别到树种: {zh} (ID: {tree_id})")
+                    elif len(en) >= 3 and en.lower() in message_text.lower():
+                        if tree_id not in self._ai_queried_tree_ids:
+                            self._ai_queried_tree_ids.append(tree_id)
+                            logger.info(f"[私聊AI] 消息中识别到树种(en): {en} (ID: {tree_id})")
+
             # 检测树种推荐意图，提前预选树种确保附带图片
             tree_recommend_keywords = [
                 "推荐树", "树种推荐", "什么树", "想要树", "送树",
@@ -1411,20 +1425,26 @@ class ForestRoomPlugin(Star):
             is_tree_recommend = any(kw in message_text for kw in tree_recommend_keywords)
 
             if is_tree_recommend and self.tree_manager.trees_list:
-                pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
+                # 只有在没有识别到具体树种名时才随机选一个
                 async with self._ai_tree_lock:
-                    if pre_tree_id not in self._ai_queried_tree_ids:
-                        self._ai_queried_tree_ids.append(pre_tree_id)
-                pre_zh = pre_info.get("zh", "未知")
-                pre_en = pre_info.get("en", "")
-                pre_tier = pre_info.get("tier", "")
-                pre_desc = pre_info.get("description", "")
-                logger.info(f"[私聊AI] 预选树种: {pre_zh} (ID: {pre_tree_id})")
-                system_prompt += f"""
+                    has_specific = bool(self._ai_queried_tree_ids)
+                if not has_specific:
+                    pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
+                    async with self._ai_tree_lock:
+                        if pre_tree_id not in self._ai_queried_tree_ids:
+                            self._ai_queried_tree_ids.append(pre_tree_id)
+                    pre_zh = pre_info.get("zh", "未知")
+                    pre_en = pre_info.get("en", "")
+                    pre_tier = pre_info.get("tier", "")
+                    pre_desc = pre_info.get("description", "")
+                    logger.info(f"[私聊AI] 预选树种: {pre_zh} (ID: {pre_tree_id})")
+                    system_prompt += f"""
 当前用户请求推荐树种。已为用户预选了一个树种：{pre_zh}（{pre_en}）[{pre_tier}]。
 树种描述：{pre_desc}
 请用可爱的语气为用户介绍这个树种，注意不要再调用 random_tree_seed 等树种查询工具。
 """
+                else:
+                    system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
             else:
                 system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
 
@@ -1924,7 +1944,23 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
 - 查询：用户说"晚安车有谁"、"晚安车名单"等
 - 统计：用户说"我晚安车几次"等"""
 
-        # === 检测树种推荐意图，提前预选树种确保附带图片 ===
+        # === 扫描消息中提到的具体树种名，提前预填缓存确保附带图片 ===
+        async with self._ai_tree_lock:
+            for tree_id, info in self.tree_manager.trees_list:
+                zh = info.get("zh", "")
+                en = info.get("en", "")
+                # 匹配中文名（≥2字，避免"树""竹"等单字误匹配）
+                if len(zh) >= 2 and zh in message_text:
+                    if tree_id not in self._ai_queried_tree_ids:
+                        self._ai_queried_tree_ids.append(tree_id)
+                        logger.info(f"消息中识别到树种: {zh} (ID: {tree_id})")
+                # 匹配英文名（≥3字符，避免短词误匹配）
+                elif len(en) >= 3 and en.lower() in message_text.lower():
+                    if tree_id not in self._ai_queried_tree_ids:
+                        self._ai_queried_tree_ids.append(tree_id)
+                        logger.info(f"消息中识别到树种(en): {en} (ID: {tree_id})")
+
+        # === 检测树种推荐意图，提前随机预选一个树种 ===
         tree_recommend_keywords = [
             "推荐树", "树种推荐", "什么树", "想要树", "送树",
             "奖励树", "要一颗树", "有没有好看的树", "好看的树",
@@ -1933,21 +1969,26 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
         is_tree_recommend = any(kw in message_text for kw in tree_recommend_keywords)
 
         if is_tree_recommend and self.tree_manager.trees_list:
-            # 直接预选一个树种，确保树种 ID 被记录，AI 回复后会附带图片
-            pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
+            # 只有在没有识别到具体树种名时才随机选一个
             async with self._ai_tree_lock:
-                if pre_tree_id not in self._ai_queried_tree_ids:
-                    self._ai_queried_tree_ids.append(pre_tree_id)
-            pre_zh = pre_info.get("zh", "未知")
-            pre_en = pre_info.get("en", "")
-            pre_tier = pre_info.get("tier", "")
-            pre_desc = pre_info.get("description", "")
-            logger.info(f"预选树种供 AI 推荐: {pre_zh} (ID: {pre_tree_id})")
-            system_prompt += f"""
+                has_specific = bool(self._ai_queried_tree_ids)
+            if not has_specific:
+                pre_tree_id, pre_info = random.choice(self.tree_manager.trees_list)
+                async with self._ai_tree_lock:
+                    if pre_tree_id not in self._ai_queried_tree_ids:
+                        self._ai_queried_tree_ids.append(pre_tree_id)
+                pre_zh = pre_info.get("zh", "未知")
+                pre_en = pre_info.get("en", "")
+                pre_tier = pre_info.get("tier", "")
+                pre_desc = pre_info.get("description", "")
+                logger.info(f"预选树种供 AI 推荐: {pre_zh} (ID: {pre_tree_id})")
+                system_prompt += f"""
 当前用户请求推荐树种。已为用户预选了一个树种：{pre_zh}（{pre_en}）[{pre_tier}]。
 树种描述：{pre_desc}
 请用可爱的语气为用户介绍这个树种，注意不要再调用 random_tree_seed 等树种查询工具。
 """
+            else:
+                system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
         else:
             system_prompt += "\n\n当你觉得用户想要一颗树、需要推荐树种、或者想送树/奖励树时，可以使用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。"
 
