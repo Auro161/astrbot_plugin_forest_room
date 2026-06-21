@@ -913,9 +913,9 @@
   },
   "153": {
     "en": "冰晶雪花草",
-    "zh": "Mysterious Tree5",
+    "zh": "冰晶花",
     "tier": "特殊",
-    "description": "Mysterious Tree5"
+    "description": "洗净杂念和纷扰，愿你思绪澄清又专一"
   },
   "154": {
     "en": "蘆葦",
@@ -949,27 +949,27 @@
   },
   "149": {
     "en": "光明樹",
-    "zh": "Mysterious Tree1",
+    "zh": "光圣木",
     "tier": "特殊",
-    "description": "Mysterious Tree1"
+    "description": "像晨光划开迷雾，点亮你专注的方向。"
   },
   "150": {
     "en": "暗黑樹",
-    "zh": "Mysterious Tree2",
+    "zh": "暗夜树",
     "tier": "特殊",
-    "description": "Mysterious Tree2"
+    "description": "万籁俱寂的夜晚，让专注深沉且静谧。"
   },
   "151": {
     "en": "水水樹",
-    "zh": "Mysterious Tree3",
+    "zh": "水珍珠",
     "tier": "特殊",
-    "description": "Mysterious Tree3"
+    "description": "顺着心流前行，你会得到盛开的珍珠。"
   },
   "152": {
     "en": "火焰花",
-    "zh": "Mysterious Tree4",
+    "zh": "焰火花",
     "tier": "特殊",
-    "description": "Mysterious Tree4"
+    "description": "点起一团团火，把分心和不安都烧成向前的动力！"
   },
   "163": {
     "en": "2026 地球樹",
@@ -981,31 +981,31 @@
     "en": "柑橘馬卡龍",
     "zh": "柑橘马卡龙",
     "tier": "特殊",
-    "description": ""
+    "description": "一颗明亮的柑橘马卡龙，唤醒你的感官，让专注更加敏锐！"
   },
   "165": {
     "en": "白葡萄馬卡龍",
     "zh": "青提马卡龙",
     "tier": "特殊",
-    "description": ""
+    "description": "像新鲜青提一样香甜多汁，这颗马卡龙让专注变得格外愉悦。"
   },
   "166": {
     "en": "咖啡馬卡龍",
     "zh": "咖啡马卡龙",
     "tier": "特殊",
-    "description": ""
+    "description": "一颗浓郁的咖啡马卡龙，让你的思绪清醒，专注力满满。"
   },
   "167": {
     "en": "藍莓馬卡龍",
     "zh": "蓝莓马卡龙",
     "tier": "特殊",
-    "description": ""
+    "description": "一颗小巧的蓝莓马卡龙，让每一分钟的专注都变成甜蜜的奖励。"
   },
   "168": {
     "en": "草莓馬卡龍",
     "zh": "草莓马卡龙",
     "tier": "特殊",
-    "description": ""
+    "description": "香甜、粉嫩、活力满满，这颗草莓马卡龙最喜欢和你一起专注。"
   },
   "169": {
     "en": "十二週年蛋糕樹",
@@ -1015,31 +1015,49 @@
   },
   "170": {
     "en": "抹茶杯子蛋糕",
-    "zh": "抹茶杯子蛋糕",
+    "zh": "抹茶纸杯蛋糕",
     "tier": "特殊",
-    "description": ""
+    "description": "一颗宁静的抹茶纸杯蛋糕，让心绪沉静，让专注像绿茶一样清新。"
   },
   "171": {
     "en": "可可碎片杯子蛋糕",
     "zh": "可可碎纸杯蛋糕",
     "tier": "特殊",
-    "description": ""
+    "description": "每一颗巧克力豆都是一段被你认真专注的时光。好吃！"
   },
   "172": {
     "en": "藍莓杯子蛋糕",
     "zh": "蓝莓纸杯蛋糕",
     "tier": "特殊",
-    "description": ""
+    "description": "一颗多汁的蓝莓纸杯蛋糕，为你的耐心与专注喝采。"
   },
   "173": {
     "en": "檸檬杯子蛋糕",
     "zh": "柠檬纸杯蛋糕",
     "tier": "特殊",
-    "description": ""
+    "description": "一颗清新的柠檬纸杯蛋糕，让你在专注时心情明亮起来。"
   },
   "174": {
     "en": "草莓杯子蛋糕",
     "zh": "草莓纸杯蛋糕",
+    "tier": "特殊",
+    "description": "一颗甜蜜的草莓纸杯蛋糕，会随着你每一分钟的专注变得更开心。"
+  },
+  "175": {
+    "en": "銀葉菊",
+    "zh": "",
+    "tier": "特殊",
+    "description": ""
+  },
+  "176": {
+    "en": "辣椒",
+    "zh": "",
+    "tier": "特殊",
+    "description": ""
+  },
+  "177": {
+    "en": "雞蛋花",
+    "zh": "",
     "tier": "特殊",
     "description": ""
   }
