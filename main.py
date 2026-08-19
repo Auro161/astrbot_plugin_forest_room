@@ -5,6 +5,7 @@ Forest 专注森林的贴心陪伴助手，提供早安晚安通知、晚安车�
 """
 
 import re
+import base64
 import time
 import asyncio
 import json
@@ -1365,10 +1366,12 @@ class ForestRoomPlugin(Star):
             image_msg_id = None
             if tree_image_path and tree_image_path.exists():
                 try:
+                    # 用 base64:// 内联发送，跨 OneBot 后端（go-cqhttp/NapCat 等）最可靠
+                    image_file = f"base64://{base64.b64encode(tree_image_path.read_bytes()).decode()}"
                     result_img = await event.bot.call_action(
                         "send_group_msg",
                         group_id=int(group_id),
-                        message=[{"type": "image", "data": {"file": tree_image_path.as_uri()}}],
+                        message=[{"type": "image", "data": {"file": image_file}}],
                     )
                     image_msg_id = result_img.get("message_id")
                 except Exception as e:
