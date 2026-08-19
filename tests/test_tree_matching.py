@@ -54,3 +54,13 @@ def test_reference_invite_message():
     zh = re.search(r'和我一起种棵\s*(\d+)\s*分钟的\s*(\S+)', msg)
     assert zh.group(2) == "黄色橡树"
     assert match_tree_id(TREE_DATA, zh.group(2), None) == "43"
+
+
+def test_substring_en():
+    """英文子串命中：'Oak' 是 'Yellow Oak Tree' 的子串。"""
+    assert match_tree_id(TREE_DATA, None, "Oak") == "43"
+
+
+def test_zh_miss_then_en_fallback():
+    """中文未命中时回退到英文精确命中。"""
+    assert match_tree_id(TREE_DATA, "未知", "Wisteria") == "1"
