@@ -223,6 +223,7 @@ class ForestRoomPlugin(Star):
         # === 基础配置 ===
         self.enabled = self._get_config("enabled", True)
         self.reply_format = self._get_config("reply_format", "{key}")
+        self.reply_with_tree_image = self._get_config("reply_with_tree_image", True)
         self.whitelist = self._get_config("whitelist", [])
         self.blacklist = self._get_config("blacklist", [])
 

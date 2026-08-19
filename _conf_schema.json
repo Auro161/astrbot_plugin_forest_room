@@ -11,6 +11,12 @@
         "hint": "检测到房间密钥后的回复格式，使用 {key} 作为密钥占位符",
         "default": "{key}"
     },
+    "reply_with_tree_image": {
+        "description": "房间邀请回复附带树种图片",
+        "type": "bool",
+        "hint": "检测到房间邀请且消息含树种名时，回复附带该树种图片",
+        "default": true
+    },
     "whitelist": {
         "description": "白名单群号",
         "type": "list",
