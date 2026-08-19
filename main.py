@@ -1344,10 +1344,8 @@ class ForestRoomPlugin(Star):
 
     async def _send_room_key_reply(self, event: AstrMessageEvent, reply_text: str,
                                    room_key: str, tree_image_path: Path | None,
-                                   group_id: str | None):
+                                   group_id: str | None, original_msg_id: int | None):
         """发送房间密钥回复与树种图片（拆为两条独立消息）；撤回同步逻辑保持不变。"""
-        original_msg_id = _get_message_id(event)
-
         # 撤回同步路径：手动发送以捕获 message_id（文本、图片各自一条消息）
         if (self.auto_recall_on_delete and group_id and original_msg_id
                 and hasattr(event, 'bot')):
@@ -1357,27 +1355,33 @@ class ForestRoomPlugin(Star):
                     group_id=int(group_id),
                     message=reply_text,
                 )
-                reply_msg_id = result.get("message_id")
+            except Exception as e:
+                # 文本尚未发出：整体回退普通发送（不会产生重复文本）
+                logger.error(f"发送房间密钥文本失败: {e}")
+                await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
+                return
+            reply_msg_id = result.get("message_id")
 
-                image_msg_id = None
-                if tree_image_path and tree_image_path.exists():
+            image_msg_id = None
+            if tree_image_path and tree_image_path.exists():
+                try:
                     result_img = await event.bot.call_action(
                         "send_group_msg",
                         group_id=int(group_id),
-                        message=[{"type": "image", "data": {"file": str(tree_image_path)}}],
+                        message=[{"type": "image", "data": {"file": tree_image_path.as_uri()}}],
                     )
                     image_msg_id = result_img.get("message_id")
+                except Exception as e:
+                    # 图片发送失败：保留文本映射，不重发文本，避免重复
+                    logger.error(f"发送树种图片失败: {e}")
 
-                if reply_msg_id:
-                    user_id = event.get_sender_id()
-                    self.db.save_room_key_mapping(
-                        group_id, original_msg_id, reply_msg_id,
-                        room_key, user_id, image_msg_id
-                    )
-                    logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}, image={image_msg_id}")
-            except Exception as e:
-                logger.error(f"发送房间密钥回复失败: {e}")
-                await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
+            if reply_msg_id:
+                user_id = event.get_sender_id()
+                self.db.save_room_key_mapping(
+                    group_id, original_msg_id, reply_msg_id,
+                    room_key, user_id, image_msg_id
+                )
+                logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}, image={image_msg_id}")
         else:
             await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
 
@@ -1608,7 +1612,7 @@ class ForestRoomPlugin(Star):
             except Exception as e:
                 logger.warning(f"匹配树种图片失败: {e}")
 
-        await self._send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id)
+        await self._send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id, original_msg_id)
 
     # === 撤回同步处理 ===
 

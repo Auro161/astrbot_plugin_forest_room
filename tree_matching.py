@@ -37,7 +37,7 @@ def match_tree_id(tree_data: dict, tree_name: str | None, tree_name_en: str | No
         for tree_id, info in tree_data.items():
             zh = info.get("zh", "")
             en = info.get("en", "")
-            if (name and name in zh) or (nl and nl in en.lower()):
+            if name in zh or nl in en.lower():
                 return tree_id
 
     return None

@@ -41,15 +41,12 @@
       ├ 依次：中文名精确匹配 → 英文名精确匹配 → 子串匹配（name in zh / name in en）
       ├ 命中第一个 tree_id → tree_manager.get_tree_image_path(tree_id)
       └ 无命中或图片不存在 → None
-  → _send_room_key_reply(event, reply_text, tree_image_path)
-      ├ tree_image_path 为 None → 维持现状
-      │   ├ 撤回路径：send_group_msg(message=reply_text) 纯文本
-      │   └ 正常路径：event.plain_result(reply_text)
-      └ 有图
-          ├ 撤回路径：send_group_msg(message=[
-          │     {"type":"text","data":{"text":reply_text}},
-          │     {"type":"image","data":{"file":str(tree_image_path)}}])
-          └ 正常路径：event.chain_result([Plain(reply_text), Image(file=str(tree_image_path))])
+  → _send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id, original_msg_id)
+      ├ 密钥文本与树种图片拆为两条独立消息
+      │   ├ 无图 → 仅发一条密钥文本消息
+      │   └ 有图 → 先发文本消息，再发纯图片消息（仅图片，无文字）
+      ├ 撤回路径：send_group_msg 分别发送文本/图片，捕获两个 message_id 存入 room_key_mappings（reply_msg_id + image_msg_id）
+      └ 正常路径：event.send(chain_result([Plain(text)]))，再 event.send(chain_result([Image(file=...)]))
 ```
 
 ### `_match_tree_image(tree_name, tree_name_en) -> Path | None`
@@ -63,21 +60,21 @@
 
 名字标准化：`re.sub(r'[\s。！？!?.,，；;…、]+$', '', name).strip()`。
 
-### `_send_room_key_reply(event, reply_text, tree_image_path)`
+### `_send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id, original_msg_id)`
 
-封装当前 `on_message` 的两条发送路径（main.py:1546-1569），仅在有图分支注入图片：
+封装当前 `on_message` 的两条发送路径（main.py:1345-1389），密钥文本与树种图片拆为两条独立消息：
 
-- **撤回同步路径**（`auto_recall_on_delete` + 群消息 + 有 `event.bot`）：用 `send_group_msg` 发送以捕获 message_id，随后 `save_room_key_mapping` 逻辑不变。
-  - 有图：message 传 OneBot 段结构（text + image）。
-  - 无图：message 传纯文本 `reply_text`（行为不变）。
-  - 发送异常：回退 `event.chain_result`（有图则带图）。
-- **正常路径**：无图 `event.plain_result(reply_text)`；有图 `event.chain_result([Plain(reply_text), Image(file=str(path))])`。
+- **撤回同步路径**（`auto_recall_on_delete` + 群消息 + 有 `event.bot`）：先 `send_group_msg` 发文本捕获 `reply_msg_id`，再（有图时）`send_group_msg` 发图片捕获 `image_msg_id`；随后 `save_room_key_mapping(group_id, original_msg_id, reply_msg_id, room_key, user_id, image_msg_id)`。原邀请被撤回时 `_handle_group_recall` 同时撤回文本与图片。
+  - 图片文件字段用 `tree_image_path.as_uri()`（`file:///` URI，OneBot v11 本地文件约定）。
+  - 文本发送失败：整体回退普通发送（文本未发出，无重复）。
+  - 图片发送失败：记录日志、保留文本映射（image_msg_id=None），不重发文本。
+- **正常路径**：先 `event.send(chain_result([Plain(reply_text)]))`，再（有图时）`event.send(chain_result([Image(file=str(path))]))`。
 
 ## 错误处理
 
 - 图片匹配失败 / 图片文件不存在 → 静默降级为纯文本，不报错、不影响密钥回复。
 - `_match_tree_image` 内部任何异常 → 捕获并返回 `None`。
-- `send_group_msg` 异常 → 沿用现有 try/except 回退发送（回退时保留图片）。
+- 文本发送异常 → 整体回退普通发送；图片发送异常 → 仅记日志、文本映射仍入库，避免重复文本。
 
 ## 配置
 
