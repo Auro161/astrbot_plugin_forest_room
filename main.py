@@ -1345,43 +1345,48 @@ class ForestRoomPlugin(Star):
     async def _send_room_key_reply(self, event: AstrMessageEvent, reply_text: str,
                                    room_key: str, tree_image_path: Path | None,
                                    group_id: str | None):
-        """发送房间密钥回复，可附带树种图片；撤回同步逻辑保持不变。"""
+        """发送房间密钥回复与树种图片（拆为两条独立消息）；撤回同步逻辑保持不变。"""
         original_msg_id = _get_message_id(event)
 
-        def build_send():
-            components = [Plain(reply_text)]
-            if tree_image_path and tree_image_path.exists():
-                components.append(Image(file=str(tree_image_path)))
-            return event.chain_result(components)
-
-        # 撤回同步路径：手动发送以捕获 message_id
+        # 撤回同步路径：手动发送以捕获 message_id（文本、图片各自一条消息）
         if (self.auto_recall_on_delete and group_id and original_msg_id
                 and hasattr(event, 'bot')):
             try:
-                message: object = reply_text
-                if tree_image_path and tree_image_path.exists():
-                    message = [
-                        {"type": "text", "data": {"text": reply_text}},
-                        {"type": "image", "data": {"file": str(tree_image_path)}},
-                    ]
                 result = await event.bot.call_action(
                     "send_group_msg",
                     group_id=int(group_id),
-                    message=message,
+                    message=reply_text,
                 )
                 reply_msg_id = result.get("message_id")
+
+                image_msg_id = None
+                if tree_image_path and tree_image_path.exists():
+                    result_img = await event.bot.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=[{"type": "image", "data": {"file": str(tree_image_path)}}],
+                    )
+                    image_msg_id = result_img.get("message_id")
+
                 if reply_msg_id:
                     user_id = event.get_sender_id()
                     self.db.save_room_key_mapping(
                         group_id, original_msg_id, reply_msg_id,
-                        room_key, user_id
+                        room_key, user_id, image_msg_id
                     )
-                    logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}")
+                    logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}, image={image_msg_id}")
             except Exception as e:
                 logger.error(f"发送房间密钥回复失败: {e}")
-                await event.send(build_send())
+                await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
         else:
-            await event.send(build_send())
+            await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
+
+    async def _send_room_key_reply_normal(self, event: AstrMessageEvent, reply_text: str,
+                                          tree_image_path: Path | None):
+        """普通发送：密钥文本与树种图片拆成两条独立消息。"""
+        await event.send(event.chain_result([Plain(reply_text)]))
+        if tree_image_path and tree_image_path.exists():
+            await event.send(event.chain_result([Image(file=str(tree_image_path))]))
 
     # === 消息处理 ===
 
@@ -1625,14 +1630,24 @@ class ForestRoomPlugin(Star):
             return
 
         reply_msg_id = mapping["reply_msg_id"]
+        image_msg_id = mapping.get("image_msg_id")
 
-        # 撤回机器人的回复
+        # 撤回机器人的回复（密钥文本消息）
         try:
             if hasattr(event, 'bot'):
                 await event.bot.call_action("delete_msg", message_id=reply_msg_id)
                 logger.info(f"已同步撤回回复: original={recalled_msg_id}, reply={reply_msg_id}")
         except Exception as e:
             logger.error(f"同步撤回失败: {e}")
+
+        # 撤回树种图片消息（若有）
+        if image_msg_id:
+            try:
+                if hasattr(event, 'bot'):
+                    await event.bot.call_action("delete_msg", message_id=image_msg_id)
+                    logger.info(f"已同步撤回图片: original={recalled_msg_id}, image={image_msg_id}")
+            except Exception as e:
+                logger.error(f"同步撤回图片失败: {e}")
 
         # 清理映射记录
         self.db.delete_room_key_mapping(group_id, recalled_msg_id)
