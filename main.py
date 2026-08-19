@@ -31,6 +31,7 @@ def _get_message_id(event) -> int | None:
     return None
 
 from .database import ForestDB
+from .tree_matching import match_tree_id
 
 
 class TreeManager:
@@ -1334,6 +1335,54 @@ class ForestRoomPlugin(Star):
         ])
         return tools
 
+    def _match_tree_image(self, tree_name: str | None, tree_name_en: str | None) -> Path | None:
+        """匹配邀请消息中的树种名到图片路径；无命中或图片缺失返回 None。"""
+        tree_id = match_tree_id(self.tree_manager.trees_data, tree_name, tree_name_en)
+        if tree_id is None:
+            return None
+        return self.tree_manager.get_tree_image_path(tree_id)
+
+    async def _send_room_key_reply(self, event: AstrMessageEvent, reply_text: str,
+                                   room_key: str, tree_image_path: Path | None,
+                                   group_id: str | None):
+        """发送房间密钥回复，可附带树种图片；撤回同步逻辑保持不变。"""
+        original_msg_id = _get_message_id(event)
+
+        def build_send():
+            components = [Plain(reply_text)]
+            if tree_image_path and tree_image_path.exists():
+                components.append(Image(file=str(tree_image_path)))
+            return event.chain_result(components)
+
+        # 撤回同步路径：手动发送以捕获 message_id
+        if (self.auto_recall_on_delete and group_id and original_msg_id
+                and hasattr(event, 'bot')):
+            try:
+                message: object = reply_text
+                if tree_image_path and tree_image_path.exists():
+                    message = [
+                        {"type": "text", "data": {"text": reply_text}},
+                        {"type": "image", "data": {"file": str(tree_image_path)}},
+                    ]
+                result = await event.bot.call_action(
+                    "send_group_msg",
+                    group_id=int(group_id),
+                    message=message,
+                )
+                reply_msg_id = result.get("message_id")
+                if reply_msg_id:
+                    user_id = event.get_sender_id()
+                    self.db.save_room_key_mapping(
+                        group_id, original_msg_id, reply_msg_id,
+                        room_key, user_id
+                    )
+                    logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}")
+            except Exception as e:
+                logger.error(f"发送房间密钥回复失败: {e}")
+                await event.send(build_send())
+        else:
+            await event.send(build_send())
+
     # === 消息处理 ===
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -1544,30 +1593,17 @@ class ForestRoomPlugin(Star):
         logger.info(f"检测到 Forest 房间邀请，密钥: {room_key}, 群: {group_id or '私聊'}")
         reply_text = self.reply_format.format(key=room_key)
 
-        # 🆕 如果启用了撤回同步且是QQ群消息，使用手动发送以捕获 message_id
-        original_msg_id = _get_message_id(event)
-        if (self.auto_recall_on_delete and group_id and original_msg_id
-                and hasattr(event, 'bot')):
+        # 附带树种图片（可配置开关；匹配失败静默降级为纯文本）
+        tree_image_path = None
+        if self.reply_with_tree_image:
             try:
-                result = await event.bot.call_action(
-                    "send_group_msg",
-                    group_id=int(group_id),
-                    message=reply_text
-                )
-                reply_msg_id = result.get("message_id")
-                if reply_msg_id:
-                    user_id = event.get_sender_id()
-                    self.db.save_room_key_mapping(
-                        group_id, original_msg_id, reply_msg_id,
-                        room_key, user_id
-                    )
-                    logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}")
+                tree_image_path = self._match_tree_image(tree_name, tree_name_en)
+                if tree_image_path:
+                    logger.info(f"房间邀请附带树种图片: {tree_image_path.name}")
             except Exception as e:
-                logger.error(f"发送房间密钥回复失败: {e}")
-                # 回退到普通发送
-                await event.send(event.plain_result(reply_text))
-        else:
-            await event.send(event.plain_result(reply_text))
+                logger.warning(f"匹配树种图片失败: {e}")
+
+        await self._send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id)
 
     # === 撤回同步处理 ===
 
