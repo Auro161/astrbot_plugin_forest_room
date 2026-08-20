@@ -763,6 +763,32 @@ class ForestDB:
             logger.error(f"查询今日专注总时长失败: {e}")
             return 0
 
+    def get_today_group_tree_ranking(self, group_id: str, limit: int = 3) -> List[dict]:
+        """获取今日某群按树种聚合的专注时长排行（按时长降序，取前 limit）"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT COALESCE(tree_name, tree_name_en) AS tree,
+                              SUM(duration_minutes) AS total_minutes
+                       FROM focus_sessions
+                       WHERE group_id = ? AND focused_at >= ?
+                         AND duration_minutes IS NOT NULL
+                         AND (tree_name IS NOT NULL OR tree_name_en IS NOT NULL)
+                       GROUP BY COALESCE(tree_name, tree_name_en)
+                       ORDER BY total_minutes DESC
+                       LIMIT ?""",
+                    (group_id, today, limit)
+                )
+                rows = cursor.fetchall()
+                return [
+                    {"tree": row[0], "minutes": row[1]}
+                    for row in rows
+                ]
+        except sqlite3.Error as e:
+            logger.error(f"查询今日树种排行失败: {e}")
+            return []
+
     def get_user_today_focus_summary(self, user_id: str, group_id: str = None) -> dict:
         """
         获取用户今日专注总结

@@ -702,8 +702,18 @@ class ForestRoomPlugin(Star):
                     today_minutes = self.db.get_today_group_focus_minutes(group_id)
                     if today_minutes > 0:
                         summary = await self._generate_focus_summary(today_minutes)
+                        report = "\n\n━━━ 今日专注小报 ━━━" + "\n" + "今天群里一共专注了 " + str(today_minutes) + " 分钟"
+
+                        # 今日树种 TOP3（按今日时长聚合）
+                        ranking = self.db.get_today_group_tree_ranking(group_id, 3)
+                        if ranking:
+                            report += "\n\n今日树种 TOP3"
+                            for i, item in enumerate(ranking, 1):
+                                report += f"\n{i}. {item['tree']} · {item['minutes']} 分钟"
+
                         if summary:
-                            message += "\n\n━━━ 今日专注小报 ━━━" + "\n" + "今天群里一共专注了 " + str(today_minutes) + " 分钟\n\n" + summary
+                            report += "\n\n" + summary
+                        message += report
 
                 await self._send_group_message(group_id, message)
             except Exception as e:
