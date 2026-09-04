@@ -464,6 +464,22 @@ class ForestRoomPlugin(Star):
         except Exception as e:
             logger.error(f"发送消息到群 {group_id} 异常: {e}")
 
+    async def _extract_image_urls(self, event) -> list:
+        """从消息链中提取图片，返回可供 AI 识别的图片 URL 列表（无图则返回空列表）。"""
+        image_urls = []
+        try:
+            # 注意：event.message 返回的是文字概要，必须用 get_messages() 才能拿到真正的图片组件
+            comps = event.get_messages() if hasattr(event, "get_messages") else []
+            for comp in comps:
+                if isinstance(comp, Image):
+                    path = await comp.convert_to_file_path()
+                    if path:
+                        image_urls.append(f"file:///{path}")
+                        logger.info(f"[识图] 已提取图片: {path}")
+        except Exception as e:
+            logger.warning(f"[识图] 提取图片失败: {e}")
+        return image_urls
+
     async def _send_group_message_with_image(self, group_id: str, message: str, image_path: Path | None):
         """发送消息到指定群（带图片）"""
         if not await self._ensure_platform_id():
@@ -1457,6 +1473,9 @@ class ForestRoomPlugin(Star):
 
             logger.info(f"[私聊AI] 收到私聊消息: {message_text} (sender={event.get_sender_id()})")
 
+            # 提取消息中的图片供 AI 识别
+            image_urls = await self._extract_image_urls(event)
+
             # 清空 AI 树种查询缓存
             async with self._ai_tree_lock:
                 self._ai_queried_tree_ids = []
@@ -1472,6 +1491,27 @@ class ForestRoomPlugin(Star):
 当用户询问树种相关问题或想要随机抽取树种时，可以调用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。
 
 重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。"""
+
+            # === 图片识别：判断图中内容 ===
+            if image_urls:
+                tree_list_str = ", ".join(
+                    f"{info.get('en','')}/{info.get('zh','')}"
+                    for _, info in self.tree_manager.trees_list
+                )
+                system_prompt += f"""
+用户给你发送了一张图片，请仔细查看图片内容，并按以下三类情况处理：
+
+【第一类：Forest 树种图片】
+如果图片中是 Forest 专注 APP 的某个树种（参考下方名单），请告诉用户这是哪种树，用可爱的语气介绍（说明中英文名，如\"这是稻草人（Scarecrow）哦！\"），并务必在回复中明确写出它的中文名或英文名，方便匹配。
+Forest 树种名单（英文名/中文名）：
+{tree_list_str}
+
+【第二类：Forest App 截图】
+如果图片是 Forest App 的界面截图（例如专注记录、统计报表、种树过程、商店、徽章、连续天数等），请解读截图内容：识别出专注时长、种的树种、金币数量、连续天数、获得的成就等信息，用可爱的语气总结给用户，并给出贴心的鼓励。
+
+【第三类：其他日常图片】
+如果图片与 Forest 无关（例如日常拍照、学习计划、笔记、作业、生活照片等），请正常识别并描述图片内容，尽可能帮用户分析图片里的信息（如文字内容、计划安排等），用友好的语气回复。
+"""
 
             # === 扫描消息中提到的具体树种名，提前预填缓存确保附带图片 ===
             async with self._ai_tree_lock:
@@ -1528,6 +1568,7 @@ class ForestRoomPlugin(Star):
                     event=event,
                     chat_provider_id=provider_id,
                     prompt=message_text,
+                    image_urls=image_urls,
                     tools=tree_tools,
                     system_prompt=system_prompt,
                 )
@@ -1540,20 +1581,6 @@ class ForestRoomPlugin(Star):
                             break
 
                 components = [Plain(resp_text)]
-
-                async with self._ai_tree_lock:
-                    queried_ids = list(self._ai_queried_tree_ids[:3])
-
-                logger.info(f"[私聊AI] queried_ids={queried_ids}")
-
-                if queried_ids:
-                    for tree_id in queried_ids:
-                        image_path = self.tree_manager.get_tree_image_path(tree_id)
-                        exists = image_path.exists() if image_path else False
-                        logger.info(f"[私聊AI] 图片检查: tree_id={tree_id}, path={image_path}, exists={exists}")
-                        if image_path and exists:
-                            components.append(Image(file=str(image_path)))
-                            logger.info(f"[私聊AI] 已添加图片: {image_path}")
 
                 logger.info(f"[私聊AI] 最终 components 数量: {len(components)}")
                 yield event.chain_result(components)
@@ -2073,11 +2100,16 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
         # 调用带工具的 AI
         trigger_type = "@机器人" if is_atme_trigger else "关键词"
         logger.info(f"检测到{trigger_type}触发: {message_text}")
+
+        # 提取消息中的图片供 AI 识别
+        image_urls = await self._extract_image_urls(event)
+
         try:
             response = await self.context.tool_loop_agent(
                 event=event,
                 chat_provider_id=provider_id,
                 prompt=message_text,
+                image_urls=image_urls,
                 tools=all_tools,
                 system_prompt=system_prompt,
             )
@@ -2092,16 +2124,6 @@ signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参�
                         resp_text = comp.text
                         break
             components = [Plain(resp_text)]
-
-            # 如果 AI 查询了树种，附加图片（使用锁保护读取）
-            async with self._ai_tree_lock:
-                queried_ids = list(self._ai_queried_tree_ids[:3])  # 最多发送3张图片
-
-            if queried_ids:
-                for tree_id in queried_ids:
-                    image_path = self.tree_manager.get_tree_image_path(tree_id)
-                    if image_path and image_path.exists():
-                        components.append(Image(file=str(image_path)))
 
             # 晚安车相关操作由工具直接发送消息，跳过 AI 回复
             async with self._night_bus_skip_reply_lock:
