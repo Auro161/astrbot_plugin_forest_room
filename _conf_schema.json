@@ -1,309 +1,356 @@
 {
-    "enabled": {
-        "description": "启用插件",
-        "type": "bool",
-        "hint": "是否启用 Forest 房间密钥提取功能",
-        "default": true
-    },
-    "reply_format": {
-        "description": "回复格式",
-        "type": "string",
-        "hint": "检测到房间密钥后的回复格式，使用 {key} 作为密钥占位符",
-        "default": "{key}"
-    },
-    "reply_with_tree_image": {
-        "description": "房间邀请回复附带树种图片",
-        "type": "bool",
-        "hint": "检测到房间邀请且消息含树种名时，回复附带该树种图片",
-        "default": true
-    },
-    "whitelist": {
-        "description": "白名单群号",
-        "type": "list",
-        "hint": "只在这些群聊启用功能，为空则全部群生效",
-        "default": [],
-        "items": {
-            "type": "string"
-        }
-    },
-    "blacklist": {
-        "description": "黑名单群号",
-        "type": "list",
-        "hint": "在这些群聊禁用功能",
-        "default": [],
-        "items": {
-            "type": "string"
-        }
-    },
-    "rate_limit_enabled": {
-        "description": "启用限流",
-        "type": "bool",
-        "hint": "是否启用响应频率限制",
-        "default": true
-    },
-    "rate_limit_window": {
-        "description": "限流时间窗口（秒）",
-        "type": "int",
-        "hint": "限流的时间窗口，默认60秒",
-        "default": 60
-    },
-    "rate_limit_count": {
-        "description": "时间窗口内最大响应次数",
-        "type": "int",
-        "hint": "在时间窗口内每个群最多响应的次数，默认10次",
-        "default": 10
-    },
-    "morning_notify_enabled": {
-        "description": "启用早起打卡通知",
-        "type": "bool",
-        "hint": "是否启用早起打卡定时通知",
-        "default": true
-    },
-    "morning_notify_time": {
-        "description": "早起通知时间（HH:MM格式）",
-        "type": "string",
-        "hint": "早起打卡通知的推送时间，默认07:00",
-        "default": "07:00"
-    },
-    "morning_notify_days": {
-        "description": "早起通知日期（0=周日，1-6=周一至周六）",
-        "type": "list",
-        "hint": "每周哪几天推送早起通知",
-        "default": [1, 2, 3, 4, 5, 6, 0],
-        "items": {
-            "type": "int"
-        }
-    },
-    "morning_notify_text": {
-        "description": "早起通知文案",
-        "type": "string",
-        "hint": "早起打卡通知的内容",
-        "default": "早上好！新的一天开始了，快来打卡种树吧！"
-    },
-    "night_notify_enabled": {
-        "description": "启用晚安通知",
-        "type": "bool",
-        "hint": "是否启用晚安定时通知",
-        "default": true
-    },
-    "night_notify_time": {
-        "description": "晚安通知时间（HH:MM格式）",
-        "type": "string",
-        "hint": "晚安通知的推送时间，默认23:00",
-        "default": "23:00"
-    },
-    "night_notify_days": {
-        "description": "晚安通知日期（0=周日，1-6=周一至周六）",
-        "type": "list",
-        "hint": "每周哪几天推送晚安通知",
-        "default": [0, 1, 2, 3, 4, 5, 6],
-        "items": {
-            "type": "int"
-        }
-    },
-    "night_notify_text": {
-        "description": "晚安通知文案",
-        "type": "string",
-        "hint": "晚安通知的内容",
-        "default": "夜深了，该休息啦，晚安！明天继续种树~"
-    },
-    "night_bus_notify_enabled": {
-        "description": "启用晚安车发车通知",
-        "type": "bool",
-        "hint": "是否启用晚安车发车通知（在晚安通知之前推送）",
-        "default": true
-    },
-    "night_bus_notify_time": {
-        "description": "晚安车发车通知时间（HH:MM格式）",
-        "type": "string",
-        "hint": "晚安车发车通知的推送时间，默认22:00",
-        "default": "22:00"
-    },
-    "weekstat_enabled": {
-        "description": "启用周统计推送",
-        "type": "bool",
-        "hint": "是否启用每周打卡统计推送",
-        "default": true
-    },
-    "weekstat_day": {
-        "description": "周统计推送日期（0=周日，1-6=周一至周六）",
-        "type": "int",
-        "hint": "每周几推送打卡统计，默认周一",
-        "default": 1
-    },
-    "weekstat_time": {
-        "description": "周统计推送时间（HH:MM格式）",
-        "type": "string",
-        "hint": "周统计推送的时间，默认07:00",
-        "default": "07:00"
-    },
-    "rank_top_n": {
-        "description": "排行榜显示人数",
-        "type": "int",
-        "hint": "周统计排行榜显示前几名",
-        "default": 5
-    },
-    "topic_notify_enabled": {
-        "description": "启用每周学习目标推送",
-        "type": "bool",
-        "hint": "是否启用每周学习目标讨论推送",
-        "default": true
-    },
-    "topic_notify_day": {
-        "description": "学习目标推送日期（0=周日，1-6=周一至周六）",
-        "type": "int",
-        "hint": "每周几推送学习目标，默认周一",
-        "default": 1
-    },
-    "topic_notify_time": {
-        "description": "学习目标推送时间（HH:MM格式）",
-        "type": "string",
-        "hint": "学习目标推送的时间，默认08:00",
-        "default": "08:00"
-    },
-    "keyword_reply_enabled": {
-        "description": "启用关键词唤起回复",
-        "type": "bool",
-        "hint": "是否启用关键词触发 AI 回复功能",
-        "default": true
-    },
-    "keywords": {
-        "description": "触发关键词列表",
-        "type": "list",
-        "hint": "触发 AI 回复的关键词，如：果果、小果",
-        "default": ["果果"],
-        "items": {
-            "type": "string"
-        }
-    },
-    "keyword_rate_limit_enabled": {
-        "description": "启用关键词限流",
-        "type": "bool",
-        "hint": "是否启用关键词触发的频率限制",
-        "default": true
-    },
-    "keyword_rate_limit_window": {
-        "description": "关键词限流时间窗口（秒）",
-        "type": "int",
-        "hint": "关键词限流的时间窗口，默认60秒",
-        "default": 60
-    },
-    "keyword_rate_limit_count": {
-        "description": "关键词限流次数",
-        "type": "int",
-        "hint": "在时间窗口内每个群最多触发关键词回复的次数，默认5次",
-        "default": 5
-    },
-    "fixed_reply_enabled": {
-        "description": "启用关键词固定回复",
-        "type": "bool",
-        "hint": "是否启用关键词触发固定回复功能",
-        "default": true
-    },
-    "fixed_reply_rules": {
-        "description": "固定回复规则列表",
-        "type": "list",
-        "hint": "配置触发词与对应的固定回复，每条规则需包含 trigger_words、reply",
-        "default": [
-            {
-                "trigger_words": ["安装包", "apk", "下载链接", "官方下载"],
-                "reply": "Forest 官方下载链接：https://www.upwardsware.com/zh_CN/"
-            }
-        ],
-        "items": {
-            "type": "object"
-        }
-    },
-    "tree_notify_enabled": {
-        "description": "启用早安树种推送",
-        "type": "bool",
-        "hint": "是否在早安通知中附带每日树种介绍",
-        "default": true
-    },
-    "greeting_reply_enabled": {
-        "description": "启用早安晚安自动回复",
-        "type": "bool",
-        "hint": "是否启用早安晚安自动回复功能",
-        "default": true
-    },
-    "morning_greeting_start": {
-        "description": "早安回复开始时间",
-        "type": "string",
-        "hint": "早安回复时间段的开始时间，如 06:00",
-        "default": "06:00"
-    },
-    "morning_greeting_end": {
-        "description": "早安回复结束时间",
-        "type": "string",
-        "hint": "早安回复时间段的结束时间，如 10:00",
-        "default": "10:00"
-    },
-    "morning_greeting_replies": {
-        "description": "早安回复内容列表",
-        "type": "list",
-        "hint": "检测到早安关键词后的回复内容，随机选择一条",
-        "default": [
-            "早上好呀~新的一天，元气满满！",
-            "早安~今天也要加油哦！",
-            "早呀~美好的一天开始啦！",
-            "早上好~记得打卡种树哦！",
-            "早安呐~又是充满希望的一天！",
-            "早~愿你今天心情美美哒！"
-        ],
-        "items": {
-            "type": "string"
-        }
-    },
-    "night_greeting_start": {
-        "description": "晚安回复开始时间",
-        "type": "string",
-        "hint": "晚安回复时间段的开始时间，如 21:00",
-        "default": "21:00"
-    },
-    "night_greeting_end": {
-        "description": "晚安回复结束时间",
-        "type": "string",
-        "hint": "晚安回复时间段的结束时间，支持跨天，如 02:00",
-        "default": "02:00"
-    },
-    "night_greeting_replies": {
-        "description": "晚安回复内容列表",
-        "type": "list",
-        "hint": "检测到晚安关键词后的回复内容，随机选择一条",
-        "default": [
-            "晚安~做个好梦，明天继续种树！",
-            "晚安呐~早点休息哦！",
-            "晚安~好梦相伴，明天见！",
-            "睡个好觉~明天又是元气满满的一天！",
-            "晚安~放下手机，安心入睡吧！",
-            "好梦~愿星星守护你的梦境！"
-        ],
-        "items": {
-            "type": "string"
-        }
-    },
-    "night_bus_enabled": {
-        "description": "启用晚安车报名",
-        "type": "bool",
-        "hint": "是否启用晚安车报名功能",
-        "default": true
-    },
-    "night_bus_start": {
-        "description": "晚安车报名开始时间",
-        "type": "string",
-        "hint": "晚安车报名时间段的开始时间，如 18:00",
-        "default": "18:00"
-    },
-    "night_bus_end": {
-        "description": "晚安车报名结束时间",
-        "type": "string",
-        "hint": "晚安车报名时间段的结束时间，如 00:00",
-        "default": "00:00"
-    },
-    "auto_recall_on_delete": {
-        "description": "撤回同步开关",
-        "type": "bool",
-        "hint": "当群成员撤回消息后，机器人自动同步撤回已提取的房间密钥回复",
-        "default": true
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "hint": "是否启用 Forest 房间密钥提取功能",
+    "default": true
+  },
+  "reply_format": {
+    "description": "回复格式",
+    "type": "string",
+    "hint": "检测到房间密钥后的回复格式，使用 {key} 作为密钥占位符",
+    "default": "{key}"
+  },
+  "reply_with_tree_image": {
+    "description": "房间邀请回复附带树种图片",
+    "type": "bool",
+    "hint": "检测到房间邀请且消息含树种名时，回复附带该树种图片",
+    "default": true
+  },
+  "version_tag_enabled": {
+    "description": "邀请码版本标签",
+    "type": "bool",
+    "hint": "检测到房间邀请后，根据邀请码结尾判断版本并发送标签（旧版本/新版本）",
+    "default": true
+  },
+  "version_tag_old": {
+    "description": "旧版本标签文本",
+    "type": "string",
+    "hint": "邀请码以指定后缀结尾时发送的文本",
+    "default": "旧版本"
+  },
+  "version_tag_new": {
+    "description": "新版本标签文本",
+    "type": "string",
+    "hint": "邀请码不以指定后缀结尾时发送的文本",
+    "default": "新版本"
+  },
+  "version_tag_suffix": {
+    "description": "旧版本判定后缀",
+    "type": "string",
+    "hint": "邀请码结尾匹配该后缀时判定为旧版本（不区分大小写）",
+    "default": "SC"
+  },
+  "whitelist": {
+    "description": "白名单群号",
+    "type": "list",
+    "hint": "只在这些群聊启用功能，为空则全部群生效",
+    "default": [],
+    "items": {
+      "type": "string"
     }
+  },
+  "blacklist": {
+    "description": "黑名单群号",
+    "type": "list",
+    "hint": "在这些群聊禁用功能",
+    "default": [],
+    "items": {
+      "type": "string"
+    }
+  },
+  "rate_limit_enabled": {
+    "description": "启用限流",
+    "type": "bool",
+    "hint": "是否启用响应频率限制",
+    "default": true
+  },
+  "rate_limit_window": {
+    "description": "限流时间窗口（秒）",
+    "type": "int",
+    "hint": "限流的时间窗口，默认60秒",
+    "default": 60
+  },
+  "rate_limit_count": {
+    "description": "时间窗口内最大响应次数",
+    "type": "int",
+    "hint": "在时间窗口内每个群最多响应的次数，默认10次",
+    "default": 10
+  },
+  "morning_notify_enabled": {
+    "description": "启用早起打卡通知",
+    "type": "bool",
+    "hint": "是否启用早起打卡定时通知",
+    "default": true
+  },
+  "morning_notify_time": {
+    "description": "早起通知时间（HH:MM格式）",
+    "type": "string",
+    "hint": "早起打卡通知的推送时间，默认07:00",
+    "default": "07:00"
+  },
+  "morning_notify_days": {
+    "description": "早起通知日期（0=周日，1-6=周一至周六）",
+    "type": "list",
+    "hint": "每周哪几天推送早起通知",
+    "default": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      0
+    ],
+    "items": {
+      "type": "int"
+    }
+  },
+  "morning_notify_text": {
+    "description": "早起通知文案",
+    "type": "string",
+    "hint": "早起打卡通知的内容",
+    "default": "早上好！新的一天开始了，快来打卡种树吧！"
+  },
+  "night_notify_enabled": {
+    "description": "启用晚安通知",
+    "type": "bool",
+    "hint": "是否启用晚安定时通知",
+    "default": true
+  },
+  "night_notify_time": {
+    "description": "晚安通知时间（HH:MM格式）",
+    "type": "string",
+    "hint": "晚安通知的推送时间，默认23:00",
+    "default": "23:00"
+  },
+  "night_notify_days": {
+    "description": "晚安通知日期（0=周日，1-6=周一至周六）",
+    "type": "list",
+    "hint": "每周哪几天推送晚安通知",
+    "default": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "items": {
+      "type": "int"
+    }
+  },
+  "night_notify_text": {
+    "description": "晚安通知文案",
+    "type": "string",
+    "hint": "晚安通知的内容",
+    "default": "夜深了，该休息啦，晚安！明天继续种树~"
+  },
+  "night_bus_notify_enabled": {
+    "description": "启用晚安车发车通知",
+    "type": "bool",
+    "hint": "是否启用晚安车发车通知（在晚安通知之前推送）",
+    "default": true
+  },
+  "night_bus_notify_time": {
+    "description": "晚安车发车通知时间（HH:MM格式）",
+    "type": "string",
+    "hint": "晚安车发车通知的推送时间，默认22:00",
+    "default": "22:00"
+  },
+  "weekstat_enabled": {
+    "description": "启用周统计推送",
+    "type": "bool",
+    "hint": "是否启用每周打卡统计推送",
+    "default": true
+  },
+  "weekstat_day": {
+    "description": "周统计推送日期（0=周日，1-6=周一至周六）",
+    "type": "int",
+    "hint": "每周几推送打卡统计，默认周一",
+    "default": 1
+  },
+  "weekstat_time": {
+    "description": "周统计推送时间（HH:MM格式）",
+    "type": "string",
+    "hint": "周统计推送的时间，默认07:00",
+    "default": "07:00"
+  },
+  "rank_top_n": {
+    "description": "排行榜显示人数",
+    "type": "int",
+    "hint": "周统计排行榜显示前几名",
+    "default": 5
+  },
+  "topic_notify_enabled": {
+    "description": "启用每周学习目标推送",
+    "type": "bool",
+    "hint": "是否启用每周学习目标讨论推送",
+    "default": true
+  },
+  "topic_notify_day": {
+    "description": "学习目标推送日期（0=周日，1-6=周一至周六）",
+    "type": "int",
+    "hint": "每周几推送学习目标，默认周一",
+    "default": 1
+  },
+  "topic_notify_time": {
+    "description": "学习目标推送时间（HH:MM格式）",
+    "type": "string",
+    "hint": "学习目标推送的时间，默认08:00",
+    "default": "08:00"
+  },
+  "keyword_reply_enabled": {
+    "description": "启用关键词唤起回复",
+    "type": "bool",
+    "hint": "是否启用关键词触发 AI 回复功能",
+    "default": true
+  },
+  "keywords": {
+    "description": "触发关键词列表",
+    "type": "list",
+    "hint": "触发 AI 回复的关键词，如：果果、小果",
+    "default": [
+      "果果"
+    ],
+    "items": {
+      "type": "string"
+    }
+  },
+  "keyword_rate_limit_enabled": {
+    "description": "启用关键词限流",
+    "type": "bool",
+    "hint": "是否启用关键词触发的频率限制",
+    "default": true
+  },
+  "keyword_rate_limit_window": {
+    "description": "关键词限流时间窗口（秒）",
+    "type": "int",
+    "hint": "关键词限流的时间窗口，默认60秒",
+    "default": 60
+  },
+  "keyword_rate_limit_count": {
+    "description": "关键词限流次数",
+    "type": "int",
+    "hint": "在时间窗口内每个群最多触发关键词回复的次数，默认5次",
+    "default": 5
+  },
+  "fixed_reply_enabled": {
+    "description": "启用关键词固定回复",
+    "type": "bool",
+    "hint": "是否启用关键词触发固定回复功能",
+    "default": true
+  },
+  "fixed_reply_rules": {
+    "description": "固定回复规则列表",
+    "type": "list",
+    "hint": "配置触发词与对应的固定回复，每条规则需包含 trigger_words、reply",
+    "default": [
+      {
+        "trigger_words": [
+          "安装包",
+          "apk",
+          "下载链接",
+          "官方下载"
+        ],
+        "reply": "Forest 官方下载链接：https://www.upwardsware.com/zh_CN/"
+      }
+    ],
+    "items": {
+      "type": "object"
+    }
+  },
+  "tree_notify_enabled": {
+    "description": "启用早安树种推送",
+    "type": "bool",
+    "hint": "是否在早安通知中附带每日树种介绍",
+    "default": true
+  },
+  "greeting_reply_enabled": {
+    "description": "启用早安晚安自动回复",
+    "type": "bool",
+    "hint": "是否启用早安晚安自动回复功能",
+    "default": true
+  },
+  "morning_greeting_start": {
+    "description": "早安回复开始时间",
+    "type": "string",
+    "hint": "早安回复时间段的开始时间，如 06:00",
+    "default": "06:00"
+  },
+  "morning_greeting_end": {
+    "description": "早安回复结束时间",
+    "type": "string",
+    "hint": "早安回复时间段的结束时间，如 10:00",
+    "default": "10:00"
+  },
+  "morning_greeting_replies": {
+    "description": "早安回复内容列表",
+    "type": "list",
+    "hint": "检测到早安关键词后的回复内容，随机选择一条",
+    "default": [
+      "早上好呀~新的一天，元气满满！",
+      "早安~今天也要加油哦！",
+      "早呀~美好的一天开始啦！",
+      "早上好~记得打卡种树哦！",
+      "早安呐~又是充满希望的一天！",
+      "早~愿你今天心情美美哒！"
+    ],
+    "items": {
+      "type": "string"
+    }
+  },
+  "night_greeting_start": {
+    "description": "晚安回复开始时间",
+    "type": "string",
+    "hint": "晚安回复时间段的开始时间，如 21:00",
+    "default": "21:00"
+  },
+  "night_greeting_end": {
+    "description": "晚安回复结束时间",
+    "type": "string",
+    "hint": "晚安回复时间段的结束时间，支持跨天，如 02:00",
+    "default": "02:00"
+  },
+  "night_greeting_replies": {
+    "description": "晚安回复内容列表",
+    "type": "list",
+    "hint": "检测到晚安关键词后的回复内容，随机选择一条",
+    "default": [
+      "晚安~做个好梦，明天继续种树！",
+      "晚安呐~早点休息哦！",
+      "晚安~好梦相伴，明天见！",
+      "睡个好觉~明天又是元气满满的一天！",
+      "晚安~放下手机，安心入睡吧！",
+      "好梦~愿星星守护你的梦境！"
+    ],
+    "items": {
+      "type": "string"
+    }
+  },
+  "night_bus_enabled": {
+    "description": "启用晚安车报名",
+    "type": "bool",
+    "hint": "是否启用晚安车报名功能",
+    "default": true
+  },
+  "night_bus_start": {
+    "description": "晚安车报名开始时间",
+    "type": "string",
+    "hint": "晚安车报名时间段的开始时间，如 18:00",
+    "default": "18:00"
+  },
+  "night_bus_end": {
+    "description": "晚安车报名结束时间",
+    "type": "string",
+    "hint": "晚安车报名时间段的结束时间，如 00:00",
+    "default": "00:00"
+  },
+  "auto_recall_on_delete": {
+    "description": "撤回同步开关",
+    "type": "bool",
+    "hint": "当群成员撤回消息后，机器人自动同步撤回已提取的房间密钥回复",
+    "default": true
+  }
 }
