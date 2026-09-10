@@ -96,6 +96,12 @@ class ForestDB:
             except sqlite3.OperationalError:
                 pass
 
+            # 兼容旧表：添加 version_msg_id 字段（已有则跳过）
+            try:
+                conn.execute("ALTER TABLE room_key_mappings ADD COLUMN version_msg_id INTEGER")
+            except sqlite3.OperationalError:
+                pass
+
             # 专注统计表
             conn.execute("""CREATE TABLE IF NOT EXISTS focus_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -560,15 +566,16 @@ class ForestDB:
     def save_room_key_mapping(self, group_id: str, original_msg_id: int,
                                reply_msg_id: int, room_key: str,
                                user_id: str = None,
-                               image_msg_id: int = None) -> bool:
-        """保存房间密钥消息映射（image_msg_id 为图片消息 id，可为空）"""
+                               image_msg_id: int = None,
+                               version_msg_id: int = None) -> bool:
+        """保存房间密钥消息映射（image_msg_id 为图片消息 id，version_msg_id 为版本标签消息 id，均可为空）"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
                     """INSERT OR REPLACE INTO room_key_mappings
-                       (group_id, original_msg_id, reply_msg_id, image_msg_id, room_key, user_id)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (group_id, original_msg_id, reply_msg_id, image_msg_id, room_key, user_id)
+                       (group_id, original_msg_id, reply_msg_id, image_msg_id, version_msg_id, room_key, user_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (group_id, original_msg_id, reply_msg_id, image_msg_id, version_msg_id, room_key, user_id)
                 )
                 conn.commit()
                 return True
@@ -581,7 +588,7 @@ class ForestDB:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
-                    """SELECT id, group_id, original_msg_id, reply_msg_id, image_msg_id, room_key, user_id, created_at
+                    """SELECT id, group_id, original_msg_id, reply_msg_id, image_msg_id, version_msg_id, room_key, user_id, created_at
                        FROM room_key_mappings
                        WHERE group_id = ? AND original_msg_id = ?""",
                     (group_id, original_msg_id)
@@ -594,9 +601,10 @@ class ForestDB:
                         "original_msg_id": row[2],
                         "reply_msg_id": row[3],
                         "image_msg_id": row[4],
-                        "room_key": row[5],
-                        "user_id": row[6],
-                        "created_at": row[7]
+                        "version_msg_id": row[5],
+                        "room_key": row[6],
+                        "user_id": row[7],
+                        "created_at": row[8]
                     }
                 return None
         except sqlite3.Error as e:

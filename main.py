@@ -1447,9 +1447,10 @@ class ForestRoomPlugin(Star):
 
     async def _send_room_key_reply(self, event: AstrMessageEvent, reply_text: str,
                                    room_key: str, tree_image_path: Path | None,
-                                   group_id: str | None, original_msg_id: int | None):
-        """发送房间密钥回复与树种图片（拆为两条独立消息）；撤回同步逻辑保持不变。"""
-        # 撤回同步路径：手动发送以捕获 message_id（文本、图片各自一条消息）
+                                   group_id: str | None, original_msg_id: int | None,
+                                   version_text: str | None = None):
+        """发送房间密钥回复、版本标签与树种图片（拆为独立消息）；撤回同步逻辑保持不变。"""
+        # 撤回同步路径：手动发送以捕获 message_id（文本、版本标签、图片各自一条消息）
         if (self.auto_recall_on_delete and group_id and original_msg_id
                 and hasattr(event, 'bot')):
             try:
@@ -1461,9 +1462,22 @@ class ForestRoomPlugin(Star):
             except Exception as e:
                 # 文本尚未发出：整体回退普通发送（不会产生重复文本）
                 logger.error(f"发送房间密钥文本失败: {e}")
-                await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
+                await self._send_room_key_reply_normal(event, reply_text, tree_image_path, version_text)
                 return
             reply_msg_id = result.get("message_id")
+
+            # 版本标签（在图片之前发送）
+            version_msg_id = None
+            if version_text:
+                try:
+                    result_ver = await event.bot.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=version_text,
+                    )
+                    version_msg_id = result_ver.get("message_id")
+                except Exception as e:
+                    logger.error(f"发送版本标签失败: {e}")
 
             image_msg_id = None
             if tree_image_path and tree_image_path.exists():
@@ -1484,16 +1498,19 @@ class ForestRoomPlugin(Star):
                 user_id = event.get_sender_id()
                 self.db.save_room_key_mapping(
                     group_id, original_msg_id, reply_msg_id,
-                    room_key, user_id, image_msg_id
+                    room_key, user_id, image_msg_id, version_msg_id
                 )
-                logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}, image={image_msg_id}")
+                logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}, version={version_msg_id}, image={image_msg_id}")
         else:
-            await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
+            await self._send_room_key_reply_normal(event, reply_text, tree_image_path, version_text)
 
     async def _send_room_key_reply_normal(self, event: AstrMessageEvent, reply_text: str,
-                                          tree_image_path: Path | None):
-        """普通发送：密钥文本与树种图片拆成两条独立消息。"""
+                                          tree_image_path: Path | None,
+                                          version_text: str | None = None):
+        """普通发送：密钥文本、版本标签与树种图片拆成独立消息。"""
         await event.send(event.chain_result([Plain(reply_text)]))
+        if version_text:
+            await event.send(event.chain_result([Plain(version_text)]))
         if tree_image_path and tree_image_path.exists():
             await event.send(event.chain_result([Image(file=str(tree_image_path))]))
 
@@ -1739,19 +1756,19 @@ Forest 树种名单（英文名/中文名）：
             except Exception as e:
                 logger.warning(f"匹配树种图片失败: {e}")
 
-        await self._send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id, original_msg_id)
-
-        # === 版本标签：邀请码结尾为 SC 视为旧版本，否则为新版本 ===
+        # 版本标签：邀请码结尾为 SC 视为旧版本，否则为新版本
+        version_text = None
         if self.version_tag_enabled and room_key:
             try:
                 if room_key.upper().endswith(self.version_tag_suffix.upper()):
                     version_text = self.version_tag_old
                 else:
                     version_text = self.version_tag_new
-                await event.send(event.chain_result([Plain(version_text)]))
                 logger.info(f"房间邀请版本标签: 密钥={room_key}, 发送={version_text}")
             except Exception as e:
-                logger.error(f"发送版本标签失败: {e}")
+                logger.error(f"计算版本标签失败: {e}")
+
+        await self._send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id, original_msg_id, version_text)
 
     # === 撤回同步处理 ===
 
@@ -1774,6 +1791,7 @@ Forest 树种名单（英文名/中文名）：
 
         reply_msg_id = mapping["reply_msg_id"]
         image_msg_id = mapping.get("image_msg_id")
+        version_msg_id = mapping.get("version_msg_id")
 
         # 撤回机器人的回复（密钥文本消息）
         try:
@@ -1782,6 +1800,15 @@ Forest 树种名单（英文名/中文名）：
                 logger.info(f"已同步撤回回复: original={recalled_msg_id}, reply={reply_msg_id}")
         except Exception as e:
             logger.error(f"同步撤回失败: {e}")
+
+        # 撤回版本标签消息（若有）
+        if version_msg_id:
+            try:
+                if hasattr(event, 'bot'):
+                    await event.bot.call_action("delete_msg", message_id=version_msg_id)
+                    logger.info(f"已同步撤回版本标签: original={recalled_msg_id}, version={version_msg_id}")
+            except Exception as e:
+                logger.error(f"同步撤回版本标签失败: {e}")
 
         # 撤回树种图片消息（若有）
         if image_msg_id:
