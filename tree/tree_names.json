@@ -251,6 +251,18 @@
     "tier": "史诗",
     "description": "天气那么热，趁着森林里没人，偷吃一口圣代吧！"
   },
+  "179": {
+    "en": "Watermelon Tree House",
+    "zh": "西瓜树屋",
+    "tier": "特殊",
+    "description": "沁凉的屋子里环绕着清甜，好好享受清爽的专注吧！"
+  },
+  "180": {
+    "en": "Golden Pothos",
+    "zh": "",
+    "tier": "特殊",
+    "description": ""
+  },
   "114": {
     "en": "Wishing Flower",
     "zh": "祈愿花",
@@ -322,6 +334,12 @@
     "zh": "郁金香",
     "tier": "史诗",
     "description": "饱满的花朵寄托着爱与珍惜，为你的森林带来满满心意！"
+  },
+  "181": {
+    "en": "Polka Dot Begonia",
+    "zh": "",
+    "tier": "特殊",
+    "description": ""
   },
   "76": {
     "en": "Camellia",

@@ -189,3 +189,4 @@
 | 176 | Chili Pepper / 辣椒 | 4 张 (phase_1~4) |
 | 177 | Plumeria / 鸡蛋花 | 7 张 (phase_1~7) |
 | 178 | Pineapple Tree House / 凤梨树屋 | 7 张 (phase_1~7) |
+| 179 | Watermelon Tree House / 西瓜树屋 | 7 张 (phase_1~7) |

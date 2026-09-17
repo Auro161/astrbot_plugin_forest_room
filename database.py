@@ -12,6 +12,61 @@ from typing import Optional, List, Tuple
 logger = logging.getLogger(__name__)
 
 
+def parse_time_text(text: str):
+    """解析意向时间文本为分钟数（HH*60+MM），解析失败返回 None
+
+    支持格式：
+    - "11点" / "11:00" / "11：00" → 660
+    - "10点半" / "10点30分" / "10点30" / "10:30" → 630
+    - "22:30" / "22点30分" → 1350
+    """
+    if not text:
+        return None
+    text = text.strip()
+    try:
+        # HH:MM / HH：MM
+        if ":" in text or "：" in text:
+            parts = text.replace("：", ":").split(":")
+            if len(parts) == 2:
+                h = int(parts[0].strip())
+                m = int(parts[1].strip())
+                if 0 <= h <= 23 and 0 <= m <= 59:
+                    return h * 60 + m
+                return None
+        # "X点半"
+        if "点半" in text:
+            h = int(text.split("点")[0].strip())
+            if 0 <= h <= 23:
+                return h * 60 + 30
+            return None
+        # "X点Y分" / "X点Y"
+        if "点" in text:
+            parts = text.split("点")
+            h = int(parts[0].strip())
+            m = 0
+            if len(parts) > 1:
+                m_str = parts[1].replace("分", "").strip()
+                m = int(m_str) if m_str else 0
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                return h * 60 + m
+            return None
+        # 纯数字如 "2200" / "11"
+        if text.isdigit():
+            if len(text) <= 2:
+                h = int(text)
+                if 0 <= h <= 23:
+                    return h * 60
+            elif len(text) == 4:
+                h = int(text[:2])
+                m = int(text[2:])
+                if 0 <= h <= 23 and 0 <= m <= 59:
+                    return h * 60 + m
+            return None
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
 class ForestDB:
     """Forest 插件数据库操作类"""
 
@@ -75,6 +130,34 @@ class ForestDB:
                 conn.execute("ALTER TABLE night_bus_signups ADD COLUMN preferred_tree TEXT")
             except sqlite3.OperationalError:
                 pass
+            # 兼容旧表：添加 role（车主/乘客）和 driver_id（乘客所乘车主的 user_id）字段（已有则跳过）
+            try:
+                conn.execute("ALTER TABLE night_bus_signups ADD COLUMN role TEXT DEFAULT 'passenger'")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE night_bus_signups ADD COLUMN driver_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+            # 晚安车到点提醒去重表（每天每车只提醒一次）
+            conn.execute("""CREATE TABLE IF NOT EXISTS night_bus_driver_notified (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id TEXT NOT NULL,
+                driver_id TEXT NOT NULL,
+                notify_date TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(group_id, driver_id, notify_date)
+            )""")
+
+            # 晚安车教程附带状态表（每日每群首次报名附带一次）
+            conn.execute("""CREATE TABLE IF NOT EXISTS night_bus_tutorial_shown (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id TEXT NOT NULL,
+                shown_date TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(group_id, shown_date)
+            )""")
 
             # 房间密钥映射表（用于撤回同步）
             conn.execute("""CREATE TABLE IF NOT EXISTS room_key_mappings (
@@ -423,10 +506,13 @@ class ForestDB:
 
     def signup_night_bus(
         self, user_id: str, group_id: str, user_name: str = None,
-        preferred_time: str = None, preferred_tree: str = None
+        preferred_time: str = None, preferred_tree: str = None,
+        role: str = 'passenger', driver_id: str = None
     ) -> bool:
         """报名晚安车，返回是否成功（False 表示已报名）
-        每次报名都会更新用户昵称和时间/树种偏好
+        每次报名都会更新用户昵称、时间/树种偏好、角色和所乘车
+        role: 'driver'=车主 / 'passenger'=乘客
+        driver_id: 乘客所乘车主的 user_id（车主本人和待定乘客为 None）
         """
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
@@ -434,15 +520,17 @@ class ForestDB:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
                     """INSERT INTO night_bus_signups
-                       (user_id, group_id, user_name, signup_time, signup_date, preferred_time, preferred_tree)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       (user_id, group_id, user_name, signup_time, signup_date, preferred_time, preferred_tree, role, driver_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(user_id, group_id, signup_date)
                        DO UPDATE SET
                          user_name = excluded.user_name,
                          signup_time = excluded.signup_time,
                          preferred_time = excluded.preferred_time,
-                         preferred_tree = excluded.preferred_tree""",
-                    (user_id, group_id, user_name, now, today, preferred_time, preferred_tree)
+                         preferred_tree = excluded.preferred_tree,
+                         role = excluded.role,
+                         driver_id = excluded.driver_id""",
+                    (user_id, group_id, user_name, now, today, preferred_time, preferred_tree, role, driver_id)
                 )
                 conn.commit()
                 return cursor.rowcount > 0
@@ -451,32 +539,91 @@ class ForestDB:
             return False
 
     def cancel_night_bus(self, user_id: str, group_id: str) -> bool:
-        """取消晚安车报名，返回是否成功"""
+        """取消晚安车报名，返回是否成功
+        若取消的是车主，其车上的乘客 driver_id 清空（落回待定池）
+        """
         today = datetime.now().strftime("%Y-%m-%d")
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # 先查用户今日角色
+                cursor = conn.execute(
+                    """SELECT role FROM night_bus_signups
+                       WHERE user_id = ? AND group_id = ? AND signup_date = ?""",
+                    (user_id, group_id, today)
+                )
+                row = cursor.fetchone()
+                is_driver = bool(row and row[0] == 'driver')
+
+                # 删除用户报名
                 cursor = conn.execute(
                     """DELETE FROM night_bus_signups
                        WHERE user_id = ? AND group_id = ? AND signup_date = ?""",
                     (user_id, group_id, today)
                 )
+                deleted = cursor.rowcount > 0
+
+                # 若取消的是车主，其乘客落回待定池
+                if deleted and is_driver:
+                    conn.execute(
+                        """UPDATE night_bus_signups SET driver_id = NULL
+                           WHERE group_id = ? AND signup_date = ? AND driver_id = ?""",
+                        (group_id, today, user_id)
+                    )
+                    # 同时清除该车主的到点提醒记录（当天可重新报名再提醒）
+                    conn.execute(
+                        """DELETE FROM night_bus_driver_notified
+                           WHERE group_id = ? AND driver_id = ? AND notify_date = ?""",
+                        (group_id, user_id, today)
+                    )
                 conn.commit()
-                return cursor.rowcount > 0
+                return deleted
         except sqlite3.Error as e:
             logger.error(f"取消晚安车报名失败: {e}")
             return False
 
     def get_night_bus_signups(
         self, group_id: str
-    ) -> List[Tuple[str, str, str, str]]:
-        """获取今日晚安车报名列表，返回 [(user_id, user_name, preferred_time, preferred_tree)]"""
+    ) -> List[Tuple[str, str, str, str, str, str]]:
+        """获取今日晚安车报名列表
+        返回 [(user_id, user_name, preferred_time, preferred_tree, role, driver_id)]
+        role: 'driver'/'passenger'；driver_id: 乘客所乘车主的 user_id（无则 None）
+        """
         today = datetime.now().strftime("%Y-%m-%d")
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
-                    """SELECT user_id, user_name, preferred_time, preferred_tree
+                    """SELECT user_id, user_name, preferred_time, preferred_tree, role, driver_id
                        FROM night_bus_signups
                        WHERE group_id = ? AND signup_date = ?
+                       ORDER BY signup_time ASC""",
+                    (group_id, today)
+                )
+                return cursor.fetchall()
+        except sqlite3.Error:
+            return []
+
+    def get_night_bus_driver_count(self, group_id: str) -> int:
+        """获取今日晚安车车主数"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT COUNT(*) FROM night_bus_signups
+                       WHERE group_id = ? AND signup_date = ? AND role = 'driver'""",
+                    (group_id, today)
+                )
+                return cursor.fetchone()[0]
+        except sqlite3.Error:
+            return 0
+
+    def get_night_bus_drivers(self, group_id: str) -> List[Tuple[str, str]]:
+        """获取今日所有车主，返回 [(user_id, user_name)]（供 AI 选车校验）"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT user_id, user_name FROM night_bus_signups
+                       WHERE group_id = ? AND signup_date = ? AND role = 'driver'
                        ORDER BY signup_time ASC""",
                     (group_id, today)
                 )
@@ -510,6 +657,80 @@ class ForestDB:
                 return cursor.fetchone()[0]
         except sqlite3.Error:
             return 0
+
+    # === 晚安车到点提醒去重 ===
+
+    def mark_driver_notified(self, group_id: str, driver_id: str) -> bool:
+        """记录车主今日已提醒（去重用），已存在返回 False"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO night_bus_driver_notified
+                       (group_id, driver_id, notify_date) VALUES (?, ?, ?)""",
+                    (group_id, driver_id, today)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"记录车主提醒失败: {e}")
+            return False
+
+    def get_unnotified_drivers_by_time(
+        self, group_id: str, minute: int, fallback_minute: int
+    ) -> List[Tuple[str, str]]:
+        """查询到点但未提醒的车主，返回 [(user_id, user_name)]
+        minute: 当前分钟数（HH*60+MM）
+        fallback_minute: 统一发车时间分钟数（车主未填意向时间时用它兜底）
+        匹配规则：车主填了意向时间 → 按意向时间匹配；未填 → 按兜底时间匹配
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT s.user_id, s.user_name, s.preferred_time
+                       FROM night_bus_signups s
+                       LEFT JOIN night_bus_driver_notified n
+                         ON n.group_id = s.group_id AND n.driver_id = s.user_id AND n.notify_date = s.signup_date
+                       WHERE s.group_id = ? AND s.signup_date = ? AND s.role = 'driver'
+                         AND n.id IS NULL""",
+                    (group_id, today)
+                )
+                rows = cursor.fetchall()
+            result = []
+            for user_id, user_name, pref_time in rows:
+                if pref_time:
+                    # 解析意向时间：能解析就按它匹配；无法解析（如"随便"）回退到兜底时间
+                    parsed = parse_time_text(pref_time)
+                    if parsed is not None:
+                        if parsed == minute:
+                            result.append((user_id, user_name))
+                    elif minute == fallback_minute:
+                        result.append((user_id, user_name))
+                else:
+                    # 未填意向时间，按兜底时间匹配
+                    if minute == fallback_minute:
+                        result.append((user_id, user_name))
+            return result
+        except sqlite3.Error:
+            return []
+
+    # === 晚安车教程附带状态 ===
+
+    def should_show_night_bus_tutorial(self, group_id: str) -> bool:
+        """今日该群是否尚未附带过教程（附带后返回 False 并记录）"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO night_bus_tutorial_shown
+                       (group_id, shown_date) VALUES (?, ?)""",
+                    (group_id, today)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
 
     def get_group_night_bus_stats(self, group_id: str, days: int = 7) -> dict:
         """获取群晚安车统计（最近 N 天）"""

@@ -81,6 +81,8 @@ async def _schedule_loop(self):
 - 晚安通知 - 推送到白名单群
 - 周统计 - 每群单独生成排行榜
 - 学习目标 - 从数据库轮询未推送主题
+- 晚安车发车通知 - 报名人数 > 2 时按车分组展示乘客名单；无车主时附加缺司机提示
+- 车主到点提醒 - 逐分钟检查，意向时间优先（车主未填时按 `night_bus_notify_time` 兜底），群里 @车主 + 乘客名单，用 `night_bus_driver_notified` 表去重（每天每车一次）；独立开关 `night_bus_driver_remind_enabled`（默认开启）
 
 ### 4. 关键词 AI 回复
 
@@ -182,6 +184,42 @@ def _is_in_time_range(self, current_time: str, start_time: str, end_time: str) -
 - `night_greeting_start/end` - 晚安时间段
 - `morning_greeting_replies` - 早安回复列表
 - `night_greeting_replies` - 晚安回复列表
+
+### 8. 晚安车报名/选车
+
+**数据表**：`night_bus_signups`（报名记录）+ `night_bus_driver_notified`（车主提醒去重）+ `night_bus_tutorial_shown`（教程附带状态）
+
+`night_bus_signups` 关键字段：
+- `role` - 身份：`driver`（车主）/ `passenger`（乘客），默认乘客
+- `driver_id` - 乘客所乘车主的 `user_id`；车主本人及待定乘客为空
+- `preferred_time` / `preferred_tree` - 意向时间 / 意向树种
+
+**"一辆车"的标识** = `(driver_id, group_id, signup_date)`，一个车主一晚开一辆车。
+
+**核心方法**：
+- `signup_night_bus()` - 报名（含 role/driver_id，upsert 更新）
+- `cancel_night_bus()` - 取消；车主取消后其乘客 `driver_id` 清空落回待定池
+- `get_night_bus_signups()` - 返回 6 字段 `(user_id, user_name, preferred_time, preferred_tree, role, driver_id)`
+- `get_night_bus_driver_count()` / `get_night_bus_drivers()` - 车主数 / 车主列表（供选车校验）
+- `mark_driver_notified()` / `get_unnotified_drivers_by_time()` - 到点提醒去重与查询
+- `should_show_night_bus_tutorial()` - 每日每群首次报名附带教程（附带后记录）
+
+**AI 工具**（`_build_night_bus_tools`）：
+- `signup_night_bus(role, join_driver, preferred_time, preferred_tree)` - 报名
+- `cancel_night_bus` - 取消
+- `query_night_bus_signups` - 查询名单（按车分组）
+- `get_user_night_bus_count` - 个人累计次数
+
+**解析机制（分层架构）**：
+- 语义理解交给 AI（tool_loop_agent 提取 role/join_driver/时间/树种）
+- 校验/找人/落库交给代码：`_match_night_bus_driver()` 在今日车主列表模糊匹配（精确→包含→拒绝给候选）
+- 双重身份校验：一晚只能一个身份（车主或乘客）
+
+**名单格式化**：`_format_night_bus_list()` 按车分组 + 待定池分区，每行一人带编号，禁止 `、` 拼接。
+
+**车主到点提醒**：`_send_driver_reminder()` 逐分钟检查（意向时间优先，未填按 `night_bus_notify_time` 兜底），群里 @车主 + 乘客名单，`mark_driver_notified` 去重。
+
+**教程**：`_get_night_bus_tutorial_text()` 生成教程，配置留空时按 `night_bus_start/end` 动态生成（不硬编码时间）。
 
 ## 配置系统
 

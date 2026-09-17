@@ -119,6 +119,12 @@
         "hint": "晚安车发车通知的推送时间，默认22:00",
         "default": "22:00"
     },
+    "night_bus_driver_remind_enabled": {
+        "description": "启用车主到点提醒",
+        "type": "bool",
+        "hint": "是否在车主意向时间（或发车时间）到点时在群里@车主提醒（与发车通知独立开关）",
+        "default": true
+    },
     "weekstat_enabled": {
         "description": "启用周统计推送",
         "type": "bool",
@@ -299,6 +305,24 @@
         "type": "string",
         "hint": "晚安车报名时间段的结束时间，如 00:00",
         "default": "00:00"
+    },
+    "night_bus_tree_required": {
+        "description": "强制填写意向树种",
+        "type": "bool",
+        "hint": "是否强制要求报名时填写意向树种（默认宽松，可不填）",
+        "default": false
+    },
+    "night_bus_tutorial_enabled": {
+        "description": "启用报名提示教程",
+        "type": "bool",
+        "hint": "每日每群首次报名成功时附带精简教程，防止新用户不会用",
+        "default": true
+    },
+    "night_bus_tutorial_text": {
+        "description": "报名提示教程文案",
+        "type": "string",
+        "hint": "留空则自动使用当前报名时段生成；自定义则使用此文案",
+        "default": ""
     },
     "auto_recall_on_delete": {
         "description": "撤回同步开关",

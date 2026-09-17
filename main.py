@@ -321,6 +321,15 @@ class ForestRoomPlugin(Star):
         self.night_bus_notify_enabled = self._get_config("night_bus_notify_enabled", True)
         self.night_bus_notify_time = self._validate_time_config("night_bus_notify_time", "22:00")
 
+        # === 车主到点提醒配置（独立开关，与发车通知解耦） ===
+        self.night_bus_driver_remind_enabled = self._get_config("night_bus_driver_remind_enabled", True)
+
+        # === 晚安车报名提示教程配置 ===
+        self.night_bus_tree_required = self._get_config("night_bus_tree_required", False)
+        self.night_bus_tutorial_enabled = self._get_config("night_bus_tutorial_enabled", True)
+        # 留空则用当前配置动态生成教程（报名时段来自 night_bus_start/end，不硬编码）
+        self.night_bus_tutorial_text = self._get_config("night_bus_tutorial_text", "")
+
     async def initialize(self) -> None:
         """插件激活时启动定时任务"""
         await self._start_schedule()
@@ -405,6 +414,10 @@ class ForestRoomPlugin(Star):
                         current_weekday in self.night_notify_days):  # 复用晚安通知的日期配置
                         await self._send_night_bus_notify()
 
+                    # 车主到点提醒（独立开关；逐分钟检查，意向时间优先；内部按 mark_driver_notified 去重）
+                    if self.night_bus_driver_remind_enabled and current_weekday in self.night_notify_days:
+                        await self._send_driver_reminder()
+
                     # 晚安通知
                     if (self.night_notify_enabled and
                         current_time == self.night_notify_time and
@@ -463,6 +476,27 @@ class ForestRoomPlugin(Star):
                 logger.warning(f"发送消息到群 {group_id} 失败：未找到匹配的平台")
         except Exception as e:
             logger.error(f"发送消息到群 {group_id} 异常: {e}")
+
+    async def _send_group_message_with_at(self, group_id: str, at_user_id: str, message: str) -> bool:
+        """发送消息到指定群（@指定用户），返回是否发送成功"""
+        if not await self._ensure_platform_id():
+            logger.warning("平台 ID 未初始化，无法发送消息")
+            return False
+
+        session_str = f"{self._platform_id}:GroupMessage:{group_id}"
+
+        try:
+            message_chain = MessageChain([At(qq=at_user_id), Plain(message)])
+            success = await self.context.send_message(session_str, message_chain)
+            if success:
+                logger.info(f"已发送带@消息到群 {group_id}")
+                return True
+            else:
+                logger.warning(f"发送消息到群 {group_id} 失败：未找到匹配的平台")
+                return False
+        except Exception as e:
+            logger.error(f"发送消息到群 {group_id} 异常: {e}")
+            return False
 
     async def _send_group_message_with_image(self, group_id: str, message: str, image_path: Path | None):
         """发送消息到指定群（带图片）"""
@@ -720,7 +754,7 @@ class ForestRoomPlugin(Star):
                 logger.error(f"发送消息到群 {group_id} 失败: {e}")
 
     async def _send_night_bus_notify(self):
-        """发送晚安车发车通知（附带报名人员名单）"""
+        """发送晚安车发车通知（按车分组展示，附带报名人员名单）"""
         logger.info("发送晚安车发车通知")
 
         if not self.whitelist:
@@ -736,29 +770,102 @@ class ForestRoomPlugin(Star):
 
             # 只有报名人数 > 2 才发送发车通知
             if len(signups) > 2:
-                display_names = []
-                for s in signups:
-                    uid, name = s[0], s[1] or s[0]
-                    pref_t = s[2] if len(s) > 2 and s[2] else ''
-                    pref_tr = s[3] if len(s) > 3 and s[3] else ''
-                    details = []
-                    if pref_t:
-                        details.append(pref_t)
-                    if pref_tr:
-                        details.append(pref_tr)
-                    if details:
-                        display_names.append(f"{name}（{'，'.join(details)}）")
-                    else:
-                        display_names.append(name)
-                message = f"🚌 晚安车准备发车，请司机和各位乘客准备！\n\n今日乘客 {len(signups)} 人："
-                message += "\n" + "、".join(display_names)
+                driver_count = self.db.get_night_bus_driver_count(group_id)
+                lines = [f"🚌 今日晚安车共 {driver_count} 辆，请司机和各位乘客准备！"]
+                lines.append("")
+                lines.extend(self._format_night_bus_list(signups))
+
+                # 无车主时附加缺司机提示
+                if driver_count == 0:
+                    lines.append("")
+                    lines.append("⚠️ 目前还没有车主，欢迎报名当司机！")
 
                 try:
-                    await self._send_group_message(group_id, message)
+                    await self._send_group_message(group_id, "\n".join(lines))
                 except Exception as e:
                     logger.error(f"发送消息到群 {group_id} 失败: {e}")
             else:
                 logger.debug(f"群 {group_id} 晚安车报名人数不足 3 人，不发送发车通知")
+
+    async def _send_driver_reminder(self):
+        """车主到点提醒：到点后在群里 @车主 + 带乘客名单
+
+        触发时机（意向时间优先）：
+        - 车主填了意向时间（如"11点"）→ 到意向时间提醒
+        - 没填意向时间 → 按统一发车时间（night_bus_notify_time）提醒
+        去重：每天每车只提醒一次（mark_driver_notified）
+        """
+        logger.info("发送晚安车车主到点提醒")
+
+        if not self.whitelist:
+            logger.debug("白名单为空，跳过推送")
+            return
+
+        if not await self._ensure_platform_id():
+            logger.warning("平台 ID 未初始化，跳过推送")
+            return
+
+        now = datetime.now()
+        current_minute = now.hour * 60 + now.minute
+        fallback_minute = self._time_to_minute(self.night_bus_notify_time)
+
+        for group_id in self.whitelist:
+            try:
+                drivers = self.db.get_unnotified_drivers_by_time(group_id, current_minute, fallback_minute)
+                for driver_id, driver_name in drivers:
+                    # 构造提醒消息
+                    signups = self.db.get_night_bus_signups(group_id)
+                    # 找到该车主的车及其乘客
+                    car_people = []
+                    driver_display = driver_name or driver_id
+                    for s in signups:
+                        if len(s) >= 6:
+                            uid, name, pt, ptree, role, did = s[0], s[1], s[2] or '', s[3] or '', s[4] or 'passenger', s[5] or None
+                        else:
+                            uid, name = s[0], s[1]
+                            pt, ptree, role, did = '', '', 'passenger', None
+                        if uid == driver_id:
+                            car_people.append((name or uid, pt, ptree, True))
+                        elif did == driver_id:
+                            car_people.append((name or uid, pt, ptree, False))
+
+                    if car_people:
+                        lines = [f"⏰ 到点啦！{driver_display}，你的晚安车该发车了~"]
+                        lines.append("")
+                        lines.append(f"🚗 你的车({len(car_people)}人):")
+                        for i, (pname, pt, ptree, is_owner) in enumerate(car_people, start=1):
+                            details = []
+                            if is_owner:
+                                details.append("车主")
+                            if pt:
+                                details.append(pt)
+                            if ptree:
+                                details.append(ptree)
+                            if details:
+                                lines.append(f"  {i}. {pname}({'，'.join(details)})")
+                            else:
+                                lines.append(f"  {i}. {pname}")
+                        lines.append("")
+                        lines.append("请打开 Forest 创建房间，把邀请发到群里，我会自动提取密钥！")
+                    else:
+                        lines = [f"⏰ 到点啦！{driver_display}，你的晚安车该发车了~"]
+                        lines.append("")
+                        lines.append("目前还没有乘客，记得邀请大家上车~")
+
+                    # 先发送，成功后才标记已提醒（避免发送失败导致永久丢失）
+                    sent = await self._send_group_message_with_at(group_id, driver_id, "\n".join(lines))
+                    if sent:
+                        self.db.mark_driver_notified(group_id, driver_id)
+            except Exception as e:
+                logger.error(f"发送车主提醒到群 {group_id} 失败: {e}")
+
+    def _time_to_minute(self, time_str: str) -> int:
+        """把 HH:MM 字符串转成分钟数"""
+        try:
+            h, m = time_str.split(":")
+            return int(h) * 60 + int(m)
+        except (ValueError, AttributeError):
+            return 22 * 60  # 兜底 22:00
 
     async def _send_weekstat(self):
         """发送周统计排行"""
@@ -1186,59 +1293,251 @@ class ForestRoomPlugin(Star):
         ])
         return tools
 
-    def _format_night_bus_list(self, signups: list) -> list:
-        """格式化晚安车名单，返回每行的文本列表
+    def _match_night_bus_driver(self, group_id: str, name: str) -> str | None:
+        """在今日车主列表中模糊匹配车主昵称，返回车主 user_id；匹配不到或歧义返回 None
 
-        signups: [(user_id, user_name, preferred_time, preferred_tree)]
+        匹配策略（代码层，不靠 AI 猜）：
+        1. 精确匹配昵称 / user_id → 唯一命中直接返回
+        2. 包含 / 被包含匹配 → 若多个车主都命中（歧义），返回 None 让调用方列出候选
+        3. 失败返回 None（由调用方拒绝并列出候选）
         """
-        lines = []
-        for idx, item in enumerate(signups):
-            # 兼容旧格式（3或4个字段）
-            if len(item) >= 4:
+        if not name:
+            return None
+        drivers = self.db.get_night_bus_drivers(group_id)
+        if not drivers:
+            return None
+        name = name.strip().lower()
+        # 1. 精确匹配
+        exact = []
+        for uid, uname in drivers:
+            if (uname or "").strip().lower() == name or uid == name:
+                exact.append(uid)
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None  # 精确歧义，交给调用方列出候选
+        # 2. 包含 / 被包含匹配（至少 2 字，避免单字误匹配）
+        if len(name) >= 2:
+            fuzzy = []
+            for uid, uname in drivers:
+                uname_l = (uname or "").strip().lower()
+                if uname_l and (name in uname_l or uname_l in name):
+                    fuzzy.append(uid)
+            if len(fuzzy) == 1:
+                return fuzzy[0]
+            # 多个命中（歧义）→ 返回 None 让调用方列出候选
+        return None
+
+    def _get_night_bus_tutorial_text(self) -> str:
+        """获取晚安车教程文案
+
+        配置了 night_bus_tutorial_text 就用配置的；
+        留空则根据当前 night_bus_start / night_bus_end 动态生成（不硬编码时间）。
+        """
+        if self.night_bus_tutorial_text and self.night_bus_tutorial_text.strip():
+            return self.night_bus_tutorial_text
+        start = self.night_bus_start
+        end = self.night_bus_end
+        # 展示用：00:00 显示成 24:00 更符合直觉
+        end_display = "24:00" if end == "00:00" else end
+        return (
+            "🚌 晚安车小贴士:\n"
+            "• 当车主:说\"我当车主,11点,樱花\"\n"
+            "• 当乘客:说\"我坐小明的车\"或\"我当乘客\"\n"
+            "• 取消:说\"取消晚安车\"\n"
+            f"• 报名时间:{start}-{end_display},发车时间车主自定(如\"11点\")"
+        )
+
+    def _format_night_bus_list(self, signups: list) -> list:
+        """格式化晚安车名单（按车分组），返回每行的文本列表
+
+        signups: [(user_id, user_name, preferred_time, preferred_tree, role, driver_id)]
+        兼容旧格式（3/4 字段记录视为待定池乘客）。
+
+        返回格式：
+          🚗 小明 的车(2人):
+            1. 小明(车主,11点,樱花)
+            2. 小红(蓝花楹)
+          🚉 待定(1人):
+            1. 小李
+        """
+        drivers = []      # [(user_id, name, pref_time, pref_tree)]
+        passengers = {}   # driver_id -> [(user_id, name, pref_time, pref_tree)]
+        unassigned = []   # 待定池
+
+        for item in signups:
+            if len(item) >= 6:
+                uid, name, pref_time, pref_tree, role, driver_id = (
+                    item[0], item[1], item[2] or '', item[3] or '',
+                    item[4] or 'passenger', item[5] or None
+                )
+            elif len(item) >= 4:
                 uid, name, pref_time, pref_tree = item[0], item[1], item[2] or '', item[3] or ''
+                role, driver_id = 'passenger', None
             else:
                 uid, name = item[0], item[1]
-                pref_time, pref_tree = '', ''
+                pref_time, pref_tree, role, driver_id = '', '', 'passenger', None
 
             display_name = name or uid
-            details = []
-            if pref_time:
-                details.append(pref_time)
-            if pref_tree:
-                details.append(pref_tree)
-            if details:
-                lines.append(f"  {idx+1}. {display_name}（{'，'.join(details)}）")
+            entry = (uid, display_name, pref_time, pref_tree)
+
+            if role == 'driver':
+                drivers.append(entry)
+            elif driver_id:
+                passengers.setdefault(driver_id, []).append(entry)
             else:
-                lines.append(f"  {idx+1}. {display_name}")
+                unassigned.append(entry)
+
+        # 构建车主 lookup
+        driver_by_id = {d[0]: d for d in drivers}
+        driver_name_by_id = {d[0]: d[1] for d in drivers}
+
+        lines = []
+        # 每辆车：车主 + 其乘客
+        for d in drivers:
+            did = d[0]
+            car = passengers.get(did, [])
+            car_total = 1 + len(car)
+            lines.append(f"🚗 {d[1]} 的车({car_total}人):")
+            # 车主
+            d_details = []
+            if d[2]:
+                d_details.append(d[2])
+            if d[3]:
+                d_details.append(d[3])
+            owner_line = f"  {1}. {d[1]}(车主"
+            if d_details:
+                owner_line += "，" + "，".join(d_details)
+            owner_line += ")"
+            lines.append(owner_line)
+            # 乘客
+            for i, (_, pname, pt, ptree) in enumerate(car, start=2):
+                p_details = []
+                if pt:
+                    p_details.append(pt)
+                if ptree:
+                    p_details.append(ptree)
+                if p_details:
+                    lines.append(f"  {i}. {pname}（{'，'.join(p_details)}）")
+                else:
+                    lines.append(f"  {i}. {pname}")
+        # 有乘客但找不到对应车主的车（车主已取消但数据未清）→ 归入待定
+        for did, car in passengers.items():
+            if did not in driver_by_id:
+                for (_, pname, pt, ptree) in car:
+                    p_details = []
+                    if pt:
+                        p_details.append(pt)
+                    if ptree:
+                        p_details.append(ptree)
+                    if p_details:
+                        unassigned.append((None, f"{pname}(原车已取消)", pt, ptree))
+                    else:
+                        unassigned.append((None, pname, '', ''))
+        # 待定池
+        if unassigned:
+            lines.append(f"🚉 待定({len(unassigned)}人):")
+            for i, (_, name, pt, ptree) in enumerate(unassigned, start=1):
+                p_details = []
+                if pt:
+                    p_details.append(pt)
+                if ptree:
+                    p_details.append(ptree)
+                if p_details:
+                    lines.append(f"  {i}. {name}（{'，'.join(p_details)}）")
+                else:
+                    lines.append(f"  {i}. {name}")
         return lines
 
     def _build_night_bus_tools(self, user_id: str, group_id: str) -> ToolSet:
         """构建晚安车工具集"""
 
-        async def signup_night_bus(context, preferred_time: str = None, preferred_tree: str = None, **kwargs) -> str:
+        async def signup_night_bus(context, role: str = None, join_driver: str = None,
+                                   preferred_time: str = None, preferred_tree: str = None, **kwargs) -> str:
             """报名晚安车"""
             # 检查时间段
             current_time = datetime.now().strftime("%H:%M")
             if not self._is_in_time_range(current_time, self.night_bus_start, self.night_bus_end):
                 return f"⚠️ 晚安车报名时间为 {self.night_bus_start}-{self.night_bus_end}，当前不在报名时间内"
 
-            pref_str = f"，{preferred_time}" if preferred_time else ""
-            pref_str += f"，{preferred_tree}" if preferred_tree else ""
+            # 规范化角色
+            role_text = (role or "").strip()
+            is_driver = False
+            if role_text:
+                if any(k in role_text for k in ("车主", "司机", "开车", "驾驶", "开车的")):
+                    is_driver = True
+                elif any(k in role_text for k in ("乘客", "坐车", "搭车", "乘车")):
+                    is_driver = False
+                else:
+                    # 未识别的角色文本，默认按乘客处理
+                    is_driver = False
+            # role 未提及 → 默认乘客，并标记需要提示
+            role_was_unspecified = not role_text
 
             user_name = context.get_sender_name() or (f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}")
+
+            # 双重身份校验：查今日该用户已有报名
+            existing = None
+            for s in self.db.get_night_bus_signups(group_id):
+                if s[0] == user_id:
+                    existing = s
+                    break
+            existing_role = existing[4] if existing and len(existing) >= 6 else (existing[4] if existing and len(existing) >= 5 else None)
+            if existing_role == 'driver' and not is_driver:
+                return "⚠️ 你今天已经是车主了,不能同时以乘客身份坐别人的车。想换角色请先取消报名再说'取消晚安车'。"
+            if existing_role == 'passenger' and is_driver:
+                return "⚠️ 你今天已经以乘客身份报名了,不能同时当车主。想换角色请先取消报名再说'取消晚安车'。"
+
+            # 车主：driver_id 为空；乘客：尝试匹配 join_driver
+            driver_id = None
+            if is_driver:
+                driver_id = None
+            else:
+                if join_driver and join_driver.strip():
+                    driver_id = self._match_night_bus_driver(group_id, join_driver.strip())
+                    if driver_id is None:
+                        drivers = self.db.get_night_bus_drivers(group_id)
+                        if drivers:
+                            avail = "、".join(d[1] or d[0] for d in drivers)
+                            return f"⚠️ 没找到车主 {join_driver.strip()}。当前车主有:{avail},请重新选择。"
+                        return f"⚠️ 没找到车主 {join_driver.strip()}。目前还没有车主,你可以说'我当车主'来开一辆车!"
+
+            # 树种宽松匹配：不强求，但如果 night_bus_tree_required 开启且为空则提示
+            if self.night_bus_tree_required and not preferred_tree:
+                return "⚠️ 请填写你的意向树种,比如'樱花'或'蓝花楹'。"
+
             success = self.db.signup_night_bus(
                 user_id, group_id, user_name,
-                preferred_time=preferred_time, preferred_tree=preferred_tree
+                preferred_time=preferred_time, preferred_tree=preferred_tree,
+                role='driver' if is_driver else 'passenger',
+                driver_id=driver_id
             )
             signups = self.db.get_night_bus_signups(group_id)
 
-            if success:
-                lines = [f"✅ 报名成功{pref_str}！当前已报名 {len(signups)} 人："]
-                lines.extend(self._format_night_bus_list(signups))
+            # 生成回复
+            if is_driver:
+                head = f"✅ 报名成功,身份:车主!当前已报名 {len(signups)} 人:"
+            elif driver_id:
+                target_name = ""
+                for s in signups:
+                    if len(s) >= 6 and s[0] == driver_id:
+                        target_name = s[1] or s[0]
+                        break
+                head = f"✅ 已上车 {target_name or '车主'} 的车!当前已报名 {len(signups)} 人:"
             else:
-                lines = [f"✅ 已更新报名信息{pref_str}"]
-                lines.append(f"当前共 {len(signups)} 人：")
-                lines.extend(self._format_night_bus_list(signups))
+                head = f"✅ 报名成功,身份:乘客(待定)!当前已报名 {len(signups)} 人:"
+
+            # 未指定身份时附默认身份提示
+            if role_was_unspecified and not is_driver:
+                head += "\n(提示)你已按乘客报名。想当车主请说:我当车主"
+
+            lines = [head]
+            lines.extend(self._format_night_bus_list(signups))
+
+            # 每日每群首次报名成功附带教程
+            if self.night_bus_tutorial_enabled and self.db.should_show_night_bus_tutorial(group_id):
+                lines.append("")
+                lines.append(self._get_night_bus_tutorial_text())
 
             msg = "\n".join(lines)
             async with self._night_bus_skip_reply_lock:
@@ -1318,11 +1617,13 @@ class ForestRoomPlugin(Star):
                 parameters={
                     "type": "object",
                     "properties": {
+                        "role": {"type": "string", "description": "身份：'车主'（司机）或'乘客'。用户说当车主/司机/开车就是车主；说当乘客/坐车/搭车就是乘客。用户没提身份时不传"},
+                        "join_driver": {"type": "string", "description": "乘客要坐的车主的名字/昵称，如'小明'。用户说'坐小明的车'、'跟小明'、'上小明的车'就传'小明'。没提选车时不传"},
                         "preferred_time": {"type": "string", "description": "偏好的发车时间，如'11点'、'10点半'、'10点30分'。没有时间偏好时不用传"},
                         "preferred_tree": {"type": "string", "description": "偏好的树种，如'蓝花楹'、'樱花'。没有树种偏好时不用传"}
                     }
                 },
-                description="报名参加晚安车，支持指定时间和树种偏好",
+                description="报名参加晚安车，支持指定身份（车主/乘客）、选坐某位车主的车、意向时间和树种偏好",
                 handler=signup_night_bus,
             ),
             FunctionTool(
@@ -2000,11 +2301,25 @@ class ForestRoomPlugin(Star):
 
 重要：晚安车工具会自己发送报名成功/取消/名单消息到群里，你不需要再额外回复任何晚安车相关的内容给用户。工具返回"[已发送xxx消息]"代表消息已发出。
 
-signup_night_bus 工具接受 preferred_time 和 preferred_tree 两个可选参数，由你从用户消息中提取。用户说晚安车+时间就是报名意图，不一定需要"报名"关键词。
+signup_night_bus 工具接受 role、join_driver、preferred_time、preferred_tree 四个可选参数，由你从用户消息中提取。用户说晚安车+时间就是报名意图，不一定需要"报名"关键词。
+
+role 参数：用户的身份。
+- 用户说当车主/司机/开车/驾驶/开车的 → role="车主"
+- 用户说当乘客/坐车/搭车/乘车 → role="乘客"
+- 用户没提身份 → 不要传 role（工具会默认按乘客处理并提示）
+
+join_driver 参数：乘客要坐的车主的名字/昵称。
+- 用户说"坐小明的车"、"上小明的车"、"跟小明一辆"、"小明那辆带我一个" → join_driver="小明"
+- 用户没提选车 → 不要传（进待定池）
+
+preferred_time 参数：意向发车时间，如"11点"、"10点半"。
+preferred_tree 参数：意向树种，如"蓝花楹"、"樱花"。
 
 示例：
-- 用户说"晚安车11点"或"晚安车 10点半" → signup_night_bus(preferred_time="11点") 或 signup_night_bus(preferred_time="10点半")
+- 用户说"晚安车11点，我当车主，种樱花" → signup_night_bus(preferred_time="11点", role="车主", preferred_tree="樱花")
+- 用户说"我坐小明的车，蓝花楹" → signup_night_bus(role="乘客", join_driver="小明", preferred_tree="蓝花楹")
 - 用户说"报名晚安车，11点，蓝花楹" → signup_night_bus(preferred_time="11点", preferred_tree="蓝花楹")
+- 用户说"报名晚安车" → signup_night_bus()（不传参数，默认乘客进待定池）
 - 不要用文件搜索工具处理，不要从消息原文中手动拼接参数，直接理解语义后传给工具
 
 晚安车相关操作包括：
