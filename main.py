@@ -139,6 +139,10 @@ class ForestRoomPlugin(Star):
         self._night_bus_skip_reply: bool = False
         self._night_bus_skip_reply_lock = asyncio.Lock()
 
+        # === 群消息记忆缓存（供 AI 回顾历史消息） ===
+        self._group_memory: dict = {}  # {cache_key: deque(maxlen=20)}
+        self._group_memory_lock = asyncio.Lock()
+
         # Forest 房间密钥提取模式（优先级：链接 > 英文文本 > 中文文本）
         self.key_patterns = {
             'link': re.compile(r"forestapp\.cc/join-room\?token=([A-Z0-9]+)", re.IGNORECASE),
@@ -497,6 +501,89 @@ class ForestRoomPlugin(Star):
         except Exception as e:
             logger.error(f"发送消息到群 {group_id} 异常: {e}")
             return False
+
+    async def _extract_image_urls(self, event) -> list:
+        """从消息链中提取图片，返回可供 AI 识别的图片 URL 列表（无图则返回空列表）。"""
+        image_urls = []
+        try:
+            # 注意：event.message 返回的是文字概要，必须用 get_messages() 才能拿到真正的图片组件
+            comps = event.get_messages() if hasattr(event, "get_messages") else []
+            for comp in comps:
+                if isinstance(comp, Image):
+                    path = await comp.convert_to_file_path()
+                    if path:
+                        image_urls.append(f"file:///{path}")
+                        logger.info(f"[识图] 已提取图片: {path}")
+        except Exception as e:
+            logger.warning(f"[识图] 提取图片失败: {e}")
+        return image_urls
+
+    async def _record_group_message(self, event):
+        """记录消息（文字+图片）到群记忆缓存，供 AI 回顾历史。"""
+        try:
+            sender_id = event.get_sender_id()
+            if not sender_id:
+                return
+            group_id = event.get_group_id()
+            cache_key = group_id if group_id else f"dm:{sender_id}"
+            text = event.message_str or ""
+            image_url = None
+            for comp in event.get_messages():
+                if isinstance(comp, Image):
+                    try:
+                        path = await comp.convert_to_file_path()
+                        if path:
+                            image_url = f"file:///{path}"
+                    except Exception:
+                        continue
+                    break
+            if not text and not image_url:
+                return
+            entry = {
+                "sender": event.get_sender_name() or str(sender_id),
+                "sender_id": sender_id,
+                "text": text,
+                "image": image_url,
+                "ts": time.time(),
+            }
+            async with self._group_memory_lock:
+                dq = self._group_memory.setdefault(cache_key, deque(maxlen=20))
+                dq.append(entry)
+            logger.info(f"[群记忆] 记录 key={cache_key} text={text[:30]!r} image={bool(image_url)}")
+        except Exception as e:
+            logger.warning(f"[群记忆] 记录失败: {e}")
+
+    async def _build_group_memory_context(self, event):
+        """构建历史回顾上下文：返回 (文本背景, 该用户最近图片URL)。"""
+        try:
+            sender_id = event.get_sender_id()
+            group_id = event.get_group_id()
+            cache_key = group_id if group_id else f"dm:{sender_id}"
+            async with self._group_memory_lock:
+                dq = list(self._group_memory.get(cache_key, []))
+            now = time.time()
+            recent = [e for e in dq if now - e["ts"] <= 1800]  # 30 分钟内
+            if not recent:
+                return None, None
+            # 文本背景：排除当前这条（最后一条，已在 prompt 中）
+            lines = []
+            for e in recent[:-1]:
+                sender = e["sender"]
+                if e["image"]:
+                    lines.append(f"{sender}：[图片]")
+                elif e["text"]:
+                    lines.append(f"{sender}：{e['text']}")
+            context_str = "\n".join(lines) if lines else None
+            # 该用户最近 3 分钟内发的图（当前消息无图时引用）
+            recent_image = None
+            for e in reversed(recent):
+                if e["image"] and e["sender_id"] == sender_id and now - e["ts"] <= 180:
+                    recent_image = e["image"]
+                    break
+            return context_str, recent_image
+        except Exception as e:
+            logger.warning(f"[群记忆] 构建上下文失败: {e}")
+            return None, None
 
     async def _send_group_message_with_image(self, group_id: str, message: str, image_path: Path | None):
         """发送消息到指定群（带图片）"""
@@ -1656,9 +1743,10 @@ class ForestRoomPlugin(Star):
 
     async def _send_room_key_reply(self, event: AstrMessageEvent, reply_text: str,
                                    room_key: str, tree_image_path: Path | None,
-                                   group_id: str | None, original_msg_id: int | None):
-        """发送房间密钥回复与树种图片（拆为两条独立消息）；撤回同步逻辑保持不变。"""
-        # 撤回同步路径：手动发送以捕获 message_id（文本、图片各自一条消息）
+                                   group_id: str | None, original_msg_id: int | None,
+                                   version_text: str | None = None):
+        """发送房间密钥回复、版本标签与树种图片（拆为独立消息）；撤回同步逻辑保持不变。"""
+        # 撤回同步路径：手动发送以捕获 message_id（文本、版本标签、图片各自一条消息）
         if (self.auto_recall_on_delete and group_id and original_msg_id
                 and hasattr(event, 'bot')):
             try:
@@ -1670,9 +1758,22 @@ class ForestRoomPlugin(Star):
             except Exception as e:
                 # 文本尚未发出：整体回退普通发送（不会产生重复文本）
                 logger.error(f"发送房间密钥文本失败: {e}")
-                await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
+                await self._send_room_key_reply_normal(event, reply_text, tree_image_path, version_text)
                 return
             reply_msg_id = result.get("message_id")
+
+            # 版本标签（在图片之前发送）
+            version_msg_id = None
+            if version_text:
+                try:
+                    result_ver = await event.bot.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=version_text,
+                    )
+                    version_msg_id = result_ver.get("message_id")
+                except Exception as e:
+                    logger.error(f"发送版本标签失败: {e}")
 
             image_msg_id = None
             if tree_image_path and tree_image_path.exists():
@@ -1693,16 +1794,19 @@ class ForestRoomPlugin(Star):
                 user_id = event.get_sender_id()
                 self.db.save_room_key_mapping(
                     group_id, original_msg_id, reply_msg_id,
-                    room_key, user_id, image_msg_id
+                    room_key, user_id, image_msg_id, version_msg_id
                 )
-                logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}, image={image_msg_id}")
+                logger.info(f"已保存房间密钥映射: original={original_msg_id}, reply={reply_msg_id}, version={version_msg_id}, image={image_msg_id}")
         else:
-            await self._send_room_key_reply_normal(event, reply_text, tree_image_path)
+            await self._send_room_key_reply_normal(event, reply_text, tree_image_path, version_text)
 
     async def _send_room_key_reply_normal(self, event: AstrMessageEvent, reply_text: str,
-                                          tree_image_path: Path | None):
-        """普通发送：密钥文本与树种图片拆成两条独立消息。"""
+                                          tree_image_path: Path | None,
+                                          version_text: str | None = None):
+        """普通发送：密钥文本、版本标签与树种图片拆成独立消息。"""
         await event.send(event.chain_result([Plain(reply_text)]))
+        if version_text:
+            await event.send(event.chain_result([Plain(version_text)]))
         if tree_image_path and tree_image_path.exists():
             await event.send(event.chain_result([Image(file=str(tree_image_path))]))
 
@@ -1724,6 +1828,9 @@ class ForestRoomPlugin(Star):
                 and raw.get("notice_type") == "group_recall":
             await self._handle_group_recall(event, raw)
             return
+
+        # 🆕 记录消息到群记忆（供 AI 回顾历史）
+        await self._record_group_message(event)
 
         message_text = event.message_str
         if not message_text:
@@ -1758,6 +1865,9 @@ class ForestRoomPlugin(Star):
 
             logger.info(f"[私聊AI] 收到私聊消息: {message_text} (sender={event.get_sender_id()})")
 
+            # 提取消息中的图片供 AI 识别
+            image_urls = await self._extract_image_urls(event)
+
             # 清空 AI 树种查询缓存
             async with self._ai_tree_lock:
                 self._ai_queried_tree_ids = []
@@ -1773,6 +1883,27 @@ class ForestRoomPlugin(Star):
 当用户询问树种相关问题或想要随机抽取树种时，可以调用 random_tree_seed 工具随机抽取树种，并自由组织回复内容。
 
 重要：工具返回的结果已经是标准化、格式化的消息，请直接返回工具的结果，不要重新生成或修改。"""
+
+            # === 图片识别：判断图中内容 ===
+            if image_urls:
+                tree_list_str = ", ".join(
+                    f"{info.get('en','')}/{info.get('zh','')}"
+                    for _, info in self.tree_manager.trees_list
+                )
+                system_prompt += f"""
+用户给你发送了一张图片，请仔细查看图片内容，并按以下三类情况处理：
+
+【第一类：Forest 树种图片】
+如果图片中是 Forest 专注 APP 的某个树种（参考下方名单），请告诉用户这是哪种树，用可爱的语气介绍（说明中英文名，如\"这是稻草人（Scarecrow）哦！\"），并务必在回复中明确写出它的中文名或英文名，方便匹配。
+Forest 树种名单（英文名/中文名）：
+{tree_list_str}
+
+【第二类：Forest App 截图】
+如果图片是 Forest App 的界面截图（例如专注记录、统计报表、种树过程、商店、徽章、连续天数等），请解读截图内容：识别出专注时长、种的树种、金币数量、连续天数、获得的成就等信息，用可爱的语气总结给用户，并给出贴心的鼓励。
+
+【第三类：其他日常图片】
+如果图片与 Forest 无关（例如日常拍照、学习计划、笔记、作业、生活照片等），请正常识别并描述图片内容，尽可能帮用户分析图片里的信息（如文字内容、计划安排等），用友好的语气回复。
+"""
 
             # === 扫描消息中提到的具体树种名，提前预填缓存确保附带图片 ===
             async with self._ai_tree_lock:
@@ -1823,12 +1954,21 @@ class ForestRoomPlugin(Star):
 
             provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
 
+            # 回顾群聊/私聊历史（文本背景 + 最近图片）
+            mem_context, mem_image = await self._build_group_memory_context(event)
+            if mem_context:
+                system_prompt += f"\n\n【最近聊天记录回顾】\n{mem_context}\n请结合这些背景理解用户的请求，但不要直接复述记录内容。"
+            if not image_urls and mem_image:
+                image_urls = [mem_image]
+                logger.info(f"[私聊AI] 引用历史图片: {mem_image}")
+
             logger.info(f"[私聊AI] 开始调用 AI")
             try:
                 response = await self.context.tool_loop_agent(
                     event=event,
                     chat_provider_id=provider_id,
                     prompt=message_text,
+                    image_urls=image_urls,
                     tools=tree_tools,
                     system_prompt=system_prompt,
                 )
@@ -1841,20 +1981,6 @@ class ForestRoomPlugin(Star):
                             break
 
                 components = [Plain(resp_text)]
-
-                async with self._ai_tree_lock:
-                    queried_ids = list(self._ai_queried_tree_ids[:3])
-
-                logger.info(f"[私聊AI] queried_ids={queried_ids}")
-
-                if queried_ids:
-                    for tree_id in queried_ids:
-                        image_path = self.tree_manager.get_tree_image_path(tree_id)
-                        exists = image_path.exists() if image_path else False
-                        logger.info(f"[私聊AI] 图片检查: tree_id={tree_id}, path={image_path}, exists={exists}")
-                        if image_path and exists:
-                            components.append(Image(file=str(image_path)))
-                            logger.info(f"[私聊AI] 已添加图片: {image_path}")
 
                 logger.info(f"[私聊AI] 最终 components 数量: {len(components)}")
                 yield event.chain_result(components)
@@ -1926,7 +2052,19 @@ class ForestRoomPlugin(Star):
             except Exception as e:
                 logger.warning(f"匹配树种图片失败: {e}")
 
-        await self._send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id, original_msg_id)
+        # 版本标签：邀请码结尾为 SC 视为旧版本，否则为新版本
+        version_text = None
+        if self.version_tag_enabled and room_key:
+            try:
+                if room_key.upper().endswith(self.version_tag_suffix.upper()):
+                    version_text = self.version_tag_old
+                else:
+                    version_text = self.version_tag_new
+                logger.info(f"房间邀请版本标签: 密钥={room_key}, 发送={version_text}")
+            except Exception as e:
+                logger.error(f"计算版本标签失败: {e}")
+
+        await self._send_room_key_reply(event, reply_text, room_key, tree_image_path, group_id, original_msg_id, version_text)
 
     # === 撤回同步处理 ===
 
@@ -1949,6 +2087,7 @@ class ForestRoomPlugin(Star):
 
         reply_msg_id = mapping["reply_msg_id"]
         image_msg_id = mapping.get("image_msg_id")
+        version_msg_id = mapping.get("version_msg_id")
 
         # 撤回机器人的回复（密钥文本消息）
         try:
@@ -1957,6 +2096,15 @@ class ForestRoomPlugin(Star):
                 logger.info(f"已同步撤回回复: original={recalled_msg_id}, reply={reply_msg_id}")
         except Exception as e:
             logger.error(f"同步撤回失败: {e}")
+
+        # 撤回版本标签消息（若有）
+        if version_msg_id:
+            try:
+                if hasattr(event, 'bot'):
+                    await event.bot.call_action("delete_msg", message_id=version_msg_id)
+                    logger.info(f"已同步撤回版本标签: original={recalled_msg_id}, version={version_msg_id}")
+            except Exception as e:
+                logger.error(f"同步撤回版本标签失败: {e}")
 
         # 撤回树种图片消息（若有）
         if image_msg_id:
@@ -2388,11 +2536,24 @@ preferred_tree 参数：意向树种，如"蓝花楹"、"樱花"。
         # 调用带工具的 AI
         trigger_type = "@机器人" if is_atme_trigger else "关键词"
         logger.info(f"检测到{trigger_type}触发: {message_text}")
+
+        # 提取消息中的图片供 AI 识别
+        image_urls = await self._extract_image_urls(event)
+
+        # 回顾群聊历史（文本背景 + 最近图片）
+        mem_context, mem_image = await self._build_group_memory_context(event)
+        if mem_context:
+            system_prompt += f"\n\n【最近聊天记录回顾】\n{mem_context}\n请结合这些背景理解用户的请求，但不要直接复述记录内容。"
+        if not image_urls and mem_image:
+            image_urls = [mem_image]
+            logger.info(f"[最近记录] 引用历史图片: {mem_image}")
+
         try:
             response = await self.context.tool_loop_agent(
                 event=event,
                 chat_provider_id=provider_id,
                 prompt=message_text,
+                image_urls=image_urls,
                 tools=all_tools,
                 system_prompt=system_prompt,
             )
@@ -2407,16 +2568,6 @@ preferred_tree 参数：意向树种，如"蓝花楹"、"樱花"。
                         resp_text = comp.text
                         break
             components = [Plain(resp_text)]
-
-            # 如果 AI 查询了树种，附加图片（使用锁保护读取）
-            async with self._ai_tree_lock:
-                queried_ids = list(self._ai_queried_tree_ids[:3])  # 最多发送3张图片
-
-            if queried_ids:
-                for tree_id in queried_ids:
-                    image_path = self.tree_manager.get_tree_image_path(tree_id)
-                    if image_path and image_path.exists():
-                        components.append(Image(file=str(image_path)))
 
             # 晚安车相关操作由工具直接发送消息，跳过 AI 回复
             async with self._night_bus_skip_reply_lock:
