@@ -230,6 +230,13 @@ class ForestRoomPlugin(Star):
         self.enabled = self._get_config("enabled", True)
         self.reply_format = self._get_config("reply_format", "{key}")
         self.reply_with_tree_image = self._get_config("reply_with_tree_image", True)
+
+        # === 版本标签配置（邀请码结尾为 SC 视为旧版本，否则为新版本） ===
+        self.version_tag_enabled = self._get_config("version_tag_enabled", True)
+        self.version_tag_old = self._get_config("version_tag_old", "旧版本")
+        self.version_tag_new = self._get_config("version_tag_new", "新版本")
+        self.version_tag_suffix = self._get_config("version_tag_suffix", "SC")
+
         self.whitelist = self._get_config("whitelist", [])
         self.blacklist = self._get_config("blacklist", [])
 
