@@ -2287,6 +2287,23 @@ Forest 树种名单（英文名/中文名）：
 
                 components = [Plain(resp_text)]
 
+                # 恢复：AI 查询过树种时自动附带树种图片（最多3张）
+                # 仅当本次消息无图片（非识图场景）时附带，避免与识图回复重复
+                if not image_urls:
+                    async with self._ai_tree_lock:
+                        queried_ids = list(self._ai_queried_tree_ids[:3])
+
+                    logger.info(f"[私聊AI] queried_ids={queried_ids}")
+
+                    if queried_ids:
+                        for tree_id in queried_ids:
+                            image_path = self.tree_manager.get_tree_image_path(tree_id)
+                            exists = image_path.exists() if image_path else False
+                            logger.info(f"[私聊AI] 图片检查: tree_id={tree_id}, path={image_path}, exists={exists}")
+                            if image_path and exists:
+                                components.append(Image(file=str(image_path)))
+                                logger.info(f"[私聊AI] 已添加图片: {image_path}")
+
                 logger.info(f"[私聊AI] 最终 components 数量: {len(components)}")
                 yield event.chain_result(components)
                 return
@@ -2899,6 +2916,19 @@ preferred_tree 参数：意向树种，如"蓝花楹"、"樱花"。
                         resp_text = comp.text
                         break
             components = [Plain(resp_text)]
+
+            # 恢复：AI 查询过树种时自动附带树种图片（最多3张）
+            # 仅当本次消息无图片（非识图场景）时附带，避免与识图回复重复
+            if not image_urls:
+                # 如果 AI 查询了树种，附加图片（使用锁保护读取）
+                async with self._ai_tree_lock:
+                    queried_ids = list(self._ai_queried_tree_ids[:3])  # 最多发送3张图片
+
+                if queried_ids:
+                    for tree_id in queried_ids:
+                        image_path = self.tree_manager.get_tree_image_path(tree_id)
+                        if image_path and image_path.exists():
+                            components.append(Image(file=str(image_path)))
 
             # 晚安车相关操作由工具直接发送消息，跳过 AI 回复
             async with self._night_bus_skip_reply_lock:
