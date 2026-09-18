@@ -359,5 +359,17 @@
         "type": "bool",
         "hint": "当群成员撤回消息后，机器人自动同步撤回已提取的房间密钥回复",
         "default": true
+    },
+    "tree_alert_enabled": {
+        "description": "启用树种当日提醒",
+        "type": "bool",
+        "hint": "用户设置'有人种某树种就叫我'后，当天有人发起该树种房间邀请时 @提醒用户",
+        "default": true
+    },
+    "tree_alert_template": {
+        "description": "树种提醒文案模板",
+        "type": "string",
+        "hint": "触发树种提醒时发送的文案，{tree} 为树种名占位；留空使用默认文案",
+        "default": ""
     }
 }

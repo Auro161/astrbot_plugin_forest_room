@@ -159,6 +159,22 @@ class ForestDB:
                 UNIQUE(group_id, shown_date)
             )""")
 
+            # 树种当日提醒表（用户设置"有人种某树种就叫我"，当天有效）
+            conn.execute("""CREATE TABLE IF NOT EXISTS tree_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                user_name TEXT,
+                tree_id TEXT NOT NULL,
+                tree_name TEXT,
+                alert_date TEXT NOT NULL,
+                notified INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, group_id, tree_id, alert_date)
+            )""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS idx_tree_alert_lookup
+                ON tree_alerts(group_id, tree_id, alert_date)""")
+
             # 房间密钥映射表（用于撤回同步）
             conn.execute("""CREATE TABLE IF NOT EXISTS room_key_mappings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -781,6 +797,124 @@ class ForestDB:
                 "total_signups": 0,
                 "top_passengers": []
             }
+
+    # === 树种当日提醒 ===
+
+    def set_tree_alert(self, user_id: str, group_id: str, user_name: str,
+                       tree_id: str, tree_name: str = None) -> str:
+        """设置今日树种提醒，返回 'new' / 'exists' / 'error'
+        同一天同一用户同一树种只能设置一条（唯一约束）
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO tree_alerts
+                       (user_id, group_id, user_name, tree_id, tree_name, alert_date)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (user_id, group_id, user_name, tree_id, tree_name, today)
+                )
+                conn.commit()
+                if cursor.rowcount > 0:
+                    return 'new'
+                # 已存在：更新昵称快照（可能用户改过名）
+                conn.execute(
+                    """UPDATE tree_alerts SET user_name = ?
+                       WHERE user_id = ? AND group_id = ? AND tree_id = ? AND alert_date = ?""",
+                    (user_name, user_id, group_id, tree_id, today)
+                )
+                conn.commit()
+                return 'exists'
+        except sqlite3.Error as e:
+            logger.error(f"设置树种提醒失败: {e}")
+            return 'error'
+
+    def get_tree_alert_users(self, group_id: str, tree_id: str) -> List[Tuple[str, str]]:
+        """获取当天该群该树种设置了提醒且尚未被提醒过的用户
+        返回 [(user_id, user_name)]
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT user_id, user_name FROM tree_alerts
+                       WHERE group_id = ? AND tree_id = ? AND alert_date = ? AND notified = 0
+                       ORDER BY id ASC""",
+                    (group_id, tree_id, today)
+                )
+                return cursor.fetchall()
+        except sqlite3.Error:
+            return []
+
+    def mark_tree_alert_notified(self, user_id: str, group_id: str, tree_id: str) -> bool:
+        """标记用户今日该树种提醒已发送（去重：当天只提醒一次）"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """UPDATE tree_alerts SET notified = 1
+                       WHERE user_id = ? AND group_id = ? AND tree_id = ? AND alert_date = ?""",
+                    (user_id, group_id, tree_id, today)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
+
+    def cancel_tree_alert(self, user_id: str, group_id: str, tree_id: str = None) -> int:
+        """取消用户今日树种提醒；tree_id 为空取消全部，返回删除条数"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                if tree_id:
+                    cursor = conn.execute(
+                        """DELETE FROM tree_alerts
+                           WHERE user_id = ? AND group_id = ? AND tree_id = ? AND alert_date = ?""",
+                        (user_id, group_id, tree_id, today)
+                    )
+                else:
+                    cursor = conn.execute(
+                        """DELETE FROM tree_alerts
+                           WHERE user_id = ? AND group_id = ? AND alert_date = ?""",
+                        (user_id, group_id, today)
+                    )
+                conn.commit()
+                return cursor.rowcount
+        except sqlite3.Error:
+            return 0
+
+    def get_user_tree_alerts(self, user_id: str, group_id: str) -> List[Tuple[str, str, int]]:
+        """获取用户今日树种提醒列表，返回 [(tree_id, tree_name, notified)]"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """SELECT tree_id, tree_name, notified FROM tree_alerts
+                       WHERE user_id = ? AND group_id = ? AND alert_date = ?
+                       ORDER BY id ASC""",
+                    (user_id, group_id, today)
+                )
+                return cursor.fetchall()
+        except sqlite3.Error:
+            return []
+
+    def cleanup_old_tree_alerts(self, days: int = 1) -> int:
+        """清理超过指定天数的过期提醒记录，返回删除条数"""
+        try:
+            cut_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """DELETE FROM tree_alerts WHERE alert_date < ?""",
+                    (cut_date,)
+                )
+                conn.commit()
+                deleted = cursor.rowcount
+                if deleted:
+                    logger.info(f"已清理 {deleted} 条过期树种提醒")
+                return deleted
+        except sqlite3.Error as e:
+            logger.error(f"清理过期树种提醒失败: {e}")
+            return 0
 
     # === 房间密钥映射（撤回同步） ===
 

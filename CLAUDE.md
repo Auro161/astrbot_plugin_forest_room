@@ -221,6 +221,46 @@ def _is_in_time_range(self, current_time: str, start_time: str, end_time: str) -
 
 **教程**：`_get_night_bus_tutorial_text()` 生成教程，配置留空时按 `night_bus_start/end` 动态生成（不硬编码时间）。
 
+### 9. 树种当日提醒
+
+**功能**：用户 @机器人 说"我要种蓝花楹，有人种就叫我"，当天有人发起该树种房间邀请时，机器人在群里 @提醒用户加入；**只当天生效**，第二天自动失效。
+
+**数据表**：`tree_alerts`（提醒记录）
+
+关键字段：
+- `user_id` / `group_id` / `user_name` - 设置提醒的用户与群
+- `tree_id` / `tree_name` - 树种 ID（匹配核心）与中文名冗余
+- `alert_date` - 提醒日期 `YYYY-MM-DD`（当天有效性的依据）
+- `notified` - 是否已提醒（当天去重，只提醒一次）
+- 唯一约束 `(user_id, group_id, tree_id, alert_date)`
+
+**核心方法**：
+- `set_tree_alert()` - 设置提醒，返回 `new`/`exists`/`error`（INSERT OR IGNORE 去重）
+- `get_tree_alert_users()` - 当天该群该树种未提醒用户列表（`notified = 0`）
+- `mark_tree_alert_notified()` - 发送成功后标记已提醒（防重复）
+- `cancel_tree_alert()` - 取消（可指定树种，不指定取消全部）
+- `get_user_tree_alerts()` - 查看我的提醒
+- `cleanup_old_tree_alerts()` - 清理过期记录（`_schedule_loop` 每天首次检查时跑一次）
+
+**设置入口**（AI 工具 `_build_tree_alert_tools`，**仅 @机器人 时提供**，关键词唤起不提供）：
+- `set_tree_alert(tree_name, intent_text)` - 设置；`intent_text` 必须传用户原话，**代码层裁决**是否真的是提醒请求
+- `cancel_tree_alert(tree_name)` - 取消
+- `query_tree_alert` - 查询
+
+**意图裁决（代码层硬规则 `_judge_alert_intent`，不信任 AI 判断）**：
+- 三要素：① 树种名 ② 他人发起 ③ 通知我；命中任一信号（叫我/喊我/提醒/通知 强信号，蹲/等/盯/留意 等待信号，有人种/发车 他人动作）即视为提醒意图
+- 拦截反例：晚安车报名（"晚安车"字样）、查询提醒（"我的提醒/什么提醒"）、树种查询（"是什么"）、成果分享（"今天种了"）、取消（"取消/不用提醒"）、纯愿望（"我想种X" → 澄清引导）
+- 树种解析：`match_tree_id` 精确/子串 → `search_trees` 模糊唯一命中 → 多个候选/无命中则列候选让用户确认
+- 支持多树种（顿号/逗号/和/空格分隔，逐个落库）
+
+**触发入口**：`on_message` 房间密钥提取处（已解析出 `tree_name`/`tree_name_en`），调 `_check_tree_alerts()`：
+1. `match_tree_id` 归一邀请消息树种 → `tree_id`
+2. 查 `get_tree_alert_users(group_id, tree_id)`
+3. 逐个 `_send_group_message_with_at` 艾特提醒（跳过邀请发起人自己）
+4. 发送成功才 `mark_tree_alert_notified`（去重）
+
+**配置项**：`tree_alert_enabled`（开关，默认 true）、`tree_alert_template`（文案模板，`{tree}` 占位，留空用默认）。
+
 ## 配置系统
 
 配置项定义在 `_conf_schema.json`，通过 AstrBot 管理面板配置。

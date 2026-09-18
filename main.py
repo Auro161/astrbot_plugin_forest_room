@@ -122,6 +122,7 @@ class ForestRoomPlugin(Star):
 
         # === 定时任务状态 ===
         self._last_check_minute = -1
+        self._last_cleanup_date: str | None = None
         self._schedule_task = None
         self._platform_id: str | None = None
 
@@ -341,6 +342,11 @@ class ForestRoomPlugin(Star):
         # 留空则用当前配置动态生成教程（报名时段来自 night_bus_start/end，不硬编码）
         self.night_bus_tutorial_text = self._get_config("night_bus_tutorial_text", "")
 
+        # === 树种当日提醒配置 ===
+        self.tree_alert_enabled = self._get_config("tree_alert_enabled", True)
+        # 提醒文案模板，{tree} 为树种名占位；留空使用默认文案
+        self.tree_alert_template = self._get_config("tree_alert_template", "")
+
     async def initialize(self) -> None:
         """插件激活时启动定时任务"""
         await self._start_schedule()
@@ -412,6 +418,12 @@ class ForestRoomPlugin(Star):
                     self._last_check_minute = current_minute
                     current_time = now.strftime("%H:%M")
                     current_weekday = now.weekday()  # 0=周一, 6=周日
+                    current_date = now.strftime("%Y-%m-%d")
+
+                    # 每天首次检查时清理一次过期树种提醒（只保留当天）
+                    if current_date != self._last_cleanup_date:
+                        self._last_cleanup_date = current_date
+                        self.db.cleanup_old_tree_alerts(days=1)
 
                     # 早安通知
                     if (self.morning_notify_enabled and
@@ -1748,6 +1760,257 @@ class ForestRoomPlugin(Star):
             return None
         return self.tree_manager.get_tree_image_path(tree_id)
 
+    # === 树种当日提醒 ===
+
+    # 强信号：通知我（要素③）
+    _ALERT_NOTIFY_STRONG = ["叫我", "喊我", "提醒", "通知", "告诉我", "叫我一声", "喊我一声", "叫一下", "喊一下"]
+    # 等待信号：蹲/等/留意/盯（要素③，单独出现即可视为等待某树种）
+    _ALERT_NOTIFY_WAIT = ["蹲", "等", "留意", "关注", "盯着", "看着", "盯"]
+    # 他人动作（要素②）
+    _ALERT_OTHER_ACTOR = ["有人种", "有人开", "别人种", "别人开", "有人发起", "发车", "有车", "有人发"]
+    # 查询提醒反例
+    _ALERT_QUERY_WORDS = ["什么提醒", "我的提醒", "看看提醒", "看一下提醒", "看提醒", "提醒有", "有哪些提醒", "设了什么提醒"]
+    # 纯愿望反例
+    _ALERT_WISH_WORDS = ["想种", "要种", "打算种", "想种棵", "种个"]
+    # 简短确认词（弱意图确认后的二次调用）
+    _ALERT_CONFIRM_WORDS = {
+        "是", "要", "好", "行", "对", "嗯", "可以", "ok", "okay",
+        "是的", "要的", "好的", "行的", "对的", "嗯嗯", "对对", "可以啊",
+        "好呀", "好滴", "好嘞", "行呀", "要要要", "是呀", "对呀", "嗯呐", "可以呀",
+    }
+
+    def _judge_alert_intent(self, text: str) -> tuple[bool, str]:
+        """裁决用户消息是否为"设置树种提醒"意图（代码层硬规则，不依赖 AI 判断）
+
+        三要素：① 树种名 ② 他人发起 ③ 通知我。
+        返回 (是否提醒意图, 附加文案)：
+        - (True, "") 确认为提醒意图，直接落库
+        - (False, 澄清/拒绝文案) 非提醒意图，不落库
+        """
+        text = (text or "").strip()
+        if not text:
+            # 无文本可判断，不拦截（交给 AI 与树种名参数）
+            return True, ""
+
+        # 强冲突：晚安车报名优先
+        if "晚安车" in text or ("报名" in text and "提醒" not in text):
+            return False, "⚠️ 晚安车报名请走报名流程（当车主/坐车），这不是树种提醒哦~"
+        # 明确反例：查询提醒
+        if any(w in text for w in self._ALERT_QUERY_WORDS):
+            return False, "查询今日树种提醒请用「我的提醒」，我帮你列出来~"
+        # 明确反例：树种信息查询
+        if "是什么" in text or "什么是" in text:
+            return False, "想了解树种信息的话，直接问我「蓝花楹是什么树」就好，不用设置提醒~"
+        # 明确反例：成果分享
+        if "今天种了" in text or "种完了" in text or "种过了" in text or "刚种" in text:
+            return False, "种树成果我记下啦~不过这不是提醒请求，想让我盯某个树种请说「有人种就叫我」~"
+        # 明确反例：取消
+        if "取消" in text or "不用提醒" in text or "别叫" in text or "不提醒" in text or "撤销" in text:
+            return False, "取消提醒请说「取消树种提醒」或「不用提醒了」~"
+
+        # 信号评分：通知我（强）> 他人动作（中）> 等待（弱），任一命中即视为提醒意图
+        score = 0
+        if any(w in text for w in self._ALERT_NOTIFY_STRONG):
+            score = max(score, 2)
+        if any(w in text for w in self._ALERT_OTHER_ACTOR):
+            score = max(score, 1)
+        if any(w in text for w in self._ALERT_NOTIFY_WAIT):
+            score = max(score, 1)
+
+        if score >= 1:
+            return True, ""
+
+        # 纯愿望：想种/要种某树种但没说要人通知 → 澄清
+        if any(w in text for w in self._ALERT_WISH_WORDS):
+            return False, "你是想让我在别人发起「蓝花楹」房间时提醒你吗？如果是，请说「有人种就叫我」~"
+        return False, "🌳 想让我盯某个树种？可以这样说：「我要种蓝花楹，有人种就叫我」，今天有效，到时我 @你~"
+
+    def _is_confirm_text(self, text: str) -> bool:
+        """判断是否为弱意图确认后的简短确认词（精确匹配确认词集合）"""
+        t = (text or "").strip().strip("。！!?？,，、～~ ")
+        if not t or len(t) > 6:
+            return False
+        return t.lower() in self._ALERT_CONFIRM_WORDS
+
+    def _resolve_tree_names(self, raw: str) -> list:
+        """解析树种名列表：先尝试整串匹配（兼容含空格的英文名如 "Cherry Blossom"），
+        失败再按顿号/逗号/'和'/空格拆分多个树种，返回去重后的名称列表
+        """
+        if not raw:
+            return []
+        raw = raw.strip()
+        # 1. 整串优先：整串能匹配到唯一树种（可能是含空格的英文名），直接返回
+        if self._match_tree_id_fuzzy(raw):
+            return [raw]
+        # 2. 否则按分隔符拆分多个树种
+        parts = re.split(r"[、,，和\s]+", raw)
+        names = []
+        for p in parts:
+            p = p.strip()
+            if p and p not in names:
+                names.append(p)
+        return names
+
+    def _extract_tree_names_from_text(self, text: str) -> list:
+        """从消息文本中扫描出具体树种名（精确出现），返回 [(tree_id, tree_info)] 去重列表"""
+        if not text:
+            return []
+        found = []
+        seen = set()
+        for tree_id, info in self.tree_manager.trees_list:
+            zh = info.get("zh", "")
+            en = info.get("en", "")
+            if len(zh) >= 2 and zh in text:
+                if tree_id not in seen:
+                    seen.add(tree_id)
+                    found.append((tree_id, info))
+            elif len(en) >= 3 and en.lower() in text.lower():
+                if tree_id not in seen:
+                    seen.add(tree_id)
+                    found.append((tree_id, info))
+        return found
+
+    def _match_tree_id_fuzzy(self, name: str):
+        """解析树种名 → (tree_id, tree_info)；唯一命中返回，模糊/无命中返回 None"""
+        tree_id = match_tree_id(self.tree_manager.trees_data, name, None)
+        if tree_id:
+            return tree_id, self.tree_manager.get_tree_info(tree_id)
+        results = self.tree_manager.search_trees(name)
+        if len(results) == 1:
+            return results[0]
+        return None
+
+    def _build_tree_alert_tools(self, user_id: str, group_id: str, message_text: str = "") -> ToolSet:
+        """构建树种当日提醒工具集（仅 @机器人 场景提供，关键词唤起不提供）"""
+        message_text = message_text or ""
+
+        async def set_tree_alert(context, tree_name: str = None, intent_text: str = None, **kwargs) -> str:
+            """设置今日树种提醒：当天有人发起该树种房间时 @用户"""
+            if not group_id:
+                return "⚠️ 树种提醒需要在群里设置哦，去群里 @我 说就好啦~"
+
+            # 意图裁决：AI 传了原文就按原文裁决；纯确认词（弱意图确认后的二次调用）直接放行
+            text = (intent_text or message_text or "").strip()
+            if text and not self._is_confirm_text(text):
+                is_alert, reason = self._judge_alert_intent(text)
+                if not is_alert:
+                    return reason
+
+            user_name = context.get_sender_name() or (f"用户{user_id[-4:]}" if len(user_id) >= 4 else f"用户{user_id}")
+
+            # 树种解析：优先用 AI 提取的 tree_name，兜底从原文扫描
+            names = self._resolve_tree_names(tree_name or "")
+            if not names:
+                found = self._extract_tree_names_from_text(text)
+                if len(found) == 1:
+                    names = [found[0][1].get("zh", "") or found[0][0]]
+                elif len(found) > 1:
+                    cand_str = "、".join(info.get("zh", "") for _, info in found)
+                    return f"你提到了好几个树种（{cand_str}），想让我盯哪些？告诉我具体树种名，比如「蓝花楹 樱花」~"
+                else:
+                    return "🌳 想让我盯哪个树种呢？告诉我树种名，比如「我要种蓝花楹，有人种就叫我」~"
+
+            set_lines = []
+            not_found = []
+            for n in names:
+                matched = self._match_tree_id_fuzzy(n)
+                if matched is None:
+                    not_found.append(n)
+                    continue
+                tree_id, info = matched
+                tree_zh = info.get("zh", "") or n
+                result = self.db.set_tree_alert(user_id, group_id, user_name, tree_id, tree_zh)
+                if result == 'new':
+                    set_lines.append(f"✅ 已记住：今天有人发起「{tree_zh}」房间，我会 @你！")
+                elif result == 'exists':
+                    set_lines.append(f"ℹ️ 「{tree_zh}」今天已经设置过提醒了，放心~")
+                else:
+                    set_lines.append(f"⚠️ 「{tree_zh}」设置失败，请稍后再试")
+
+            for n in not_found:
+                cands = self.tree_manager.search_trees(n)
+                if cands:
+                    cand_str = "、".join(info.get("zh", "") for _, info in cands[:5])
+                    set_lines.append(f"❓ 没找到「{n}」，你是不是想说：{cand_str}？")
+                else:
+                    set_lines.append(f"❓ 没找到「{n}」，换个树种名试试？")
+
+            if set_lines:
+                set_lines.append("")
+                set_lines.append("（提醒当天有效，不需要了说「取消提醒」~）")
+            return "\n".join(set_lines) or "🌳 想让我盯哪个树种？告诉我树种名吧~"
+
+        async def cancel_tree_alert(context, tree_name: str = None, **kwargs) -> str:
+            """取消今日树种提醒（可指定树种，不指定则取消全部）"""
+            if not group_id:
+                return "⚠️ 请在群里操作取消提醒~"
+            if tree_name and tree_name.strip():
+                matched = self._match_tree_id_fuzzy(tree_name.strip())
+                if matched:
+                    tree_id, info = matched
+                    tree_zh = info.get("zh", "") or tree_name.strip()
+                    cnt = self.db.cancel_tree_alert(user_id, group_id, tree_id)
+                    if cnt:
+                        return f"✅ 已取消「{tree_zh}」的今日提醒"
+                    return f"ℹ️ 今天没有设置「{tree_zh}」的提醒"
+                cands = self.tree_manager.search_trees(tree_name.strip())
+                if cands:
+                    cand_str = "、".join(info.get("zh", "") for _, info in cands[:5])
+                    return f"❓ 没找到「{tree_name}」，你是不是想说：{cand_str}？"
+                return f"❓ 没找到树种「{tree_name}」"
+            cnt = self.db.cancel_tree_alert(user_id, group_id)
+            if cnt:
+                return f"✅ 已取消今日全部 {cnt} 条树种提醒"
+            return "ℹ️ 今天还没有设置任何树种提醒"
+
+        async def query_tree_alert(context, **kwargs) -> str:
+            """查看今日树种提醒"""
+            if not group_id:
+                return "⚠️ 请在群里查询提醒~"
+            alerts = self.db.get_user_tree_alerts(user_id, group_id)
+            if not alerts:
+                return "🌳 今天还没有设置树种提醒。想让我盯哪个树种？比如「我要种蓝花楹，有人种就叫我」"
+            lines = [f"📋 你今天的树种提醒（{len(alerts)} 条）："]
+            for tree_id, tree_name, notified in alerts:
+                status = "✅ 已提醒过" if notified else "⏳ 等待中"
+                lines.append(f"  • {tree_name or tree_id} [{status}]")
+            lines.append("")
+            lines.append("（不需要了说「取消提醒」~）")
+            return "\n".join(lines)
+
+        tools = ToolSet([
+            FunctionTool(
+                name="set_tree_alert",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "tree_name": {"type": "string", "description": "用户想被提醒的树种名，可多个（如'蓝花楹 樱花'）。用户说'我要种蓝花楹有人种叫我'就传'蓝花楹'"},
+                        "intent_text": {"type": "string", "description": "用户表达提醒意图的原话，必须原样传，供代码裁决是否真的是提醒请求"}
+                    }
+                },
+                description="设置今日树种提醒：用户想等某个树种、有人发起该树种房间时让机器人@提醒他。仅当用户表达'等某树种+有人发起时通知我'时调用",
+                handler=set_tree_alert,
+            ),
+            FunctionTool(
+                name="cancel_tree_alert",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "tree_name": {"type": "string", "description": "要取消的树种名（可选），用户指定树种时传，不指定则取消全部"}
+                    }
+                },
+                description="取消今日树种提醒，可指定树种或取消全部",
+                handler=cancel_tree_alert,
+            ),
+            FunctionTool(
+                name="query_tree_alert",
+                parameters={"type": "object", "properties": {}},
+                description="查看用户今日设置的树种提醒列表",
+                handler=query_tree_alert,
+            ),
+        ])
+        return tools
+
     async def _send_room_key_reply(self, event: AstrMessageEvent, reply_text: str,
                                    room_key: str, tree_image_path: Path | None,
                                    group_id: str | None, original_msg_id: int | None,
@@ -1816,6 +2079,41 @@ class ForestRoomPlugin(Star):
             await event.send(event.chain_result([Plain(version_text)]))
         if tree_image_path and tree_image_path.exists():
             await event.send(event.chain_result([Image(file=str(tree_image_path))]))
+
+    async def _check_tree_alerts(self, group_id: str, tree_name: str | None,
+                                 tree_name_en: str | None, inviter_id: str):
+        """检查并触发树种当日提醒：有人发起用户等待的树种房间时，群里 @用户
+
+        只提醒当天设置的提醒（数据库按 alert_date 过滤）；同一天同一用户同一树种只提醒一次
+        （发送成功后才标记 notified）；跳过邀请发起人自己。
+        """
+        try:
+            tree_id = match_tree_id(self.tree_manager.trees_data, tree_name, tree_name_en)
+            if tree_id is None:
+                return
+            tree_info = self.tree_manager.get_tree_info(tree_id)
+            tree_zh = (tree_info or {}).get("zh") or tree_name or tree_id
+
+            users = self.db.get_tree_alert_users(group_id, tree_id)
+            if not users:
+                return
+            logger.info(f"触发树种提醒: group={group_id}, tree={tree_zh}({tree_id}), 匹配 {len(users)} 人")
+
+            # 提醒文案（支持模板配置，{tree} 为树种名占位）
+            if self.tree_alert_template and self.tree_alert_template.strip():
+                alert_text = self.tree_alert_template.replace("{tree}", tree_zh)
+            else:
+                alert_text = f"你等的 {tree_zh} 来啦！🌳\n有人发起了「{tree_zh}」房间邀请，快跟上一起种！"
+
+            for uid, uname in users:
+                if str(uid) == str(inviter_id):
+                    logger.debug(f"跳过邀请发起人自己: {uid}")
+                    continue
+                sent = await self._send_group_message_with_at(group_id, uid, alert_text)
+                if sent:
+                    self.db.mark_tree_alert_notified(uid, group_id, tree_id)
+        except Exception as e:
+            logger.error(f"触发树种提醒失败: {e}")
 
     # === 消息处理 ===
 
@@ -2047,6 +2345,16 @@ Forest 树种名单（英文名/中文名）：
                 return
 
         logger.info(f"检测到 Forest 房间邀请，密钥: {room_key}, 群: {group_id or '私聊'}")
+
+        # === 树种当日提醒：有人发起用户等待的树种房间时，群里 @提醒（仅当天有效） ===
+        # 注意：user_id/tree_name/tree_name_en 定义在上方 try 块内，这里单独 try 兜底，
+        # 避免极端情况下未定义变量导致整个 on_message 崩溃（密钥提取主功能不受影响）
+        if self.tree_alert_enabled and group_id:
+            try:
+                await self._check_tree_alerts(group_id, tree_name, tree_name_en, user_id)
+            except Exception as e:
+                logger.error(f"树种提醒检查失败: {e}")
+
         reply_text = self.reply_format.format(key=room_key)
 
         # 附带树种图片（可配置开关；匹配失败静默降级为纯文本）
@@ -2434,8 +2742,13 @@ Forest 树种名单（英文名/中文名）：
         # 构建晚安车工具集
         night_bus_tools = self._build_night_bus_tools(user_id, group_id)
 
+        # 构建树种当日提醒工具集（仅 @机器人 时提供，关键词唤起不提供）
+        tree_alert_tools = ToolSet([])
+        if is_atme_trigger:
+            tree_alert_tools = self._build_tree_alert_tools(user_id, group_id, message_text)
+
         # 合并工具集
-        all_tools = ToolSet(list(checkin_tools.tools) + list(tree_tools.tools) + list(night_bus_tools.tools))
+        all_tools = ToolSet(list(checkin_tools.tools) + list(tree_tools.tools) + list(night_bus_tools.tools) + list(tree_alert_tools.tools))
 
         # 获取默认人设的系统提示词
         persona = await self.context.persona_manager.get_default_persona_v3(umo=event.unified_msg_origin)
@@ -2481,7 +2794,18 @@ preferred_tree 参数：意向树种，如"蓝花楹"、"樱花"。
 - 报名：用户说"晚安车XX点"、"报名晚安车"、"我要报名"等
 - 取消：用户说"取消晚安车"、"取消报名"等
 - 查询：用户说"晚安车有谁"、"晚安车名单"等
-- 统计：用户说"我晚安车几次"等"""
+- 统计：用户说"我晚安车几次"等
+
+【树种当日提醒】
+用户 @你 说"我要种蓝花楹，有人种就叫我"这类话时，表示想设置当日树种提醒：今天有人发起该树种房间时，由机器人 @提醒用户加入。仅当用户同时表达"某个树种"+"别人发起时通知我"两个意思时，才调用 set_tree_alert。
+- 设置：调用 set_tree_alert。tree_name 传树种名（可多个，如"蓝花楹 樱花"）；intent_text 必须传用户表达意图的原话（代码会裁决是否真的是提醒请求）。
+- 取消：用户说"取消树种提醒/不用提醒了/别叫我了" → cancel_tree_alert（用户指定树种就传 tree_name，否则取消全部）
+- 查询：用户说"我的提醒/设了什么提醒" → query_tree_alert
+注意（不要调用 set_tree_alert 的情况）：
+- 用户只说"我想种X/我要种X"（表达愿望，不是提醒）→ 不调用，正常聊天即可
+- 晚安车报名（当车主/乘客）→ 走 signup_night_bus，不要用 set_tree_alert
+- 问"X是什么树" → 走树种查询工具
+- 说"我今天种了X" → 走专注查询工具"""
 
         # === 扫描消息中提到的具体树种名，提前预填缓存确保附带图片 ===
         async with self._ai_tree_lock:
